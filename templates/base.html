@@ -112,6 +112,81 @@
 
 </div><!-- /main-wrapper -->
 
+<!-- ═══════════════════════════ FISCALOS AI CHATBOT ═══════════════════════════ -->
+
+<!-- Floating trigger (visible when chat is closed) -->
+<button class="chat-trigger" id="chatTrigger" onclick="chatOpen()" title="FiscalOS AI">
+  <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg>
+  <span class="chat-badge" id="chatBadge">AI</span>
+</button>
+
+<!-- Minimised tab -->
+<div class="chat-minimised" id="chatMinimised" style="display:none;" onclick="chatUnminimise()">
+  <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#fff;flex-shrink:0;"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+  <div>
+    <div class="chat-min-title">FiscalOS AI</div>
+    <div class="chat-min-sub">Click to expand</div>
+  </div>
+  <span style="font-size:11px;color:rgba(255,255,255,0.7);">▲</span>
+</div>
+
+<!-- Main chat panel -->
+<div class="chat-panel" id="chatPanel" style="display:none;">
+
+  <!-- Header -->
+  <div class="chat-header">
+    <div class="chat-header-row">
+      <div class="chat-avatar">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+      </div>
+      <div>
+        <div class="chat-title">FiscalOS AI</div>
+        <div class="chat-sub" id="chatSubtitle">Kenya County Fiscal Intelligence</div>
+      </div>
+      <div class="chat-header-btns">
+        <div class="chat-mode-toggle">
+          <button class="chat-mode-btn active" id="chatModeSimple"
+                  onclick="chatSetMode('simple')" title="Plain English">SIMPLE</button>
+          <button class="chat-mode-btn" id="chatModeExpert"
+                  onclick="chatSetMode('expert')" title="Analyst-level depth">EXPERT</button>
+        </div>
+        <button class="chat-hbtn" onclick="chatClear()" title="Clear chat">CLEAR</button>
+        <button class="chat-hbtn" id="chatExpandBtn" onclick="chatToggleExpand()" title="Expand">⇤</button>
+        <button class="chat-hbtn" onclick="chatMinimise()" title="Minimise">▼</button>
+        <button class="chat-hbtn" onclick="chatClose()" title="Close">✕</button>
+      </div>
+    </div>
+    <!-- Context pills: page + county -->
+    <div class="chat-pills" id="chatPills"></div>
+  </div>
+
+  <!-- Messages -->
+  <div class="chat-messages" id="chatMessages"></div>
+
+  <!-- Input -->
+  <div class="chat-input-area">
+    <!-- Suggestion chips -->
+    <div class="chat-suggestions" id="chatSuggestions"></div>
+    <div class="chat-input-row">
+      <textarea class="chat-input" id="chatInput" rows="2"
+        placeholder="Ask about any county, fiscal metric, or audit finding…"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();chatSend();}"></textarea>
+      <button class="chat-send" id="chatSendBtn" onclick="chatSend()">
+        <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+      </button>
+    </div>
+  </div>
+
+</div><!-- /chat-panel -->
+
+<!-- data attributes so JS can read Flask-rendered values -->
+<div id="fosContext"
+     data-page="{{ request.endpoint | replace('_',' ') | title }}"
+     data-county-id="{{ request.view_args.get('county_id', '') if request.view_args else '' }}"
+     data-user-role="{{ current_user.role if current_user.is_authenticated else 'viewer' }}"
+     style="display:none;"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 {% block scripts %}{% endblock %}
 </body>
