@@ -342,6 +342,76 @@ textarea.form-input { resize: vertical; }
 .score-num-sm       { font-size: 18px; font-weight: 700; color: var(--text); line-height: 1; }
 .doc-count-sm { font-size: 11px; color: var(--text3); }
 
+/* === PHASE 2: Diaspora Lens ===================================================== */
+
+/* Methodology pill bar */
+.diaspora-method-bar  { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.method-pill          { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text2);
+                        background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+                        padding: 4px 12px; cursor: default; }
+.method-pill:hover    { border-color: var(--border2); color: var(--text); }
+.method-dot           { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.method-wt            { font-size: 10px; color: var(--text3); margin-left: 2px; }
+
+/* Filter / sort bar */
+.diaspora-filter-bar  { display: flex; align-items: center; justify-content: space-between;
+                        flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.diaspora-search      { font-size: 12px; font-family: var(--font); background: var(--bg2);
+                        color: var(--text); border: 1px solid var(--border2); border-radius: 6px;
+                        padding: 5px 10px; outline: none; width: 160px; }
+.diaspora-search:focus { border-color: var(--blue); }
+.diaspora-search::placeholder { color: var(--text3); }
+
+/* Card grid */
+.diaspora-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+
+/* Individual card */
+.diaspora-card { display: flex; flex-direction: column; gap: 12px;
+                 background: var(--surface); border: 1px solid var(--border);
+                 border-radius: var(--radius); padding: 16px; text-decoration: none;
+                 color: var(--text); transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s; }
+.diaspora-card:hover { border-color: var(--blue); transform: translateY(-2px); box-shadow: var(--shadow); }
+
+.diaspora-card-top    { display: flex; justify-content: space-between; align-items: flex-start; }
+.diaspora-county-name { font-size: 14px; font-weight: 600; color: var(--text); }
+
+/* Trajectory arrow */
+.diaspora-trajectory           { font-size: 22px; font-weight: 700; line-height: 1; }
+.diaspora-traj-improving       { color: var(--green); }
+.diaspora-traj-deteriorating   { color: var(--red); }
+.diaspora-traj-stable          { color: var(--text2); }
+.diaspora-traj-new             { color: var(--text3); font-size: 16px; }
+
+/* Score row */
+.diaspora-score-row  { display: flex; align-items: center; gap: 12px; }
+.diaspora-score-num  { font-size: 40px; font-weight: 700; letter-spacing: -2px; color: var(--text); line-height: 1; }
+
+/* Component mini-bars */
+.diaspora-components  { display: flex; flex-direction: column; gap: 5px; }
+.diaspora-comp-row    { display: flex; align-items: center; gap: 6px; }
+.diaspora-comp-label  { font-size: 10px; color: var(--text3); width: 46px; flex-shrink: 0; }
+.diaspora-comp-bar-wrap { flex: 1; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.diaspora-comp-bar    { height: 100%; border-radius: 2px; transition: width 0.4s ease; }
+.diaspora-comp-score  { font-size: 10px; color: var(--text2); width: 24px; text-align: right; flex-shrink: 0; }
+
+/* Risk flags */
+.diaspora-risks     { display: flex; flex-direction: column; gap: 3px; }
+.diaspora-risk-flag { font-size: 10px; color: var(--yellow); background: var(--yellow-dim);
+                      padding: 2px 7px; border-radius: 4px; display: inline-block; }
+
+/* Disclaimer footer */
+.diaspora-disclaimer { display: flex; gap: 10px; align-items: flex-start;
+                       margin-top: 32px; padding: 16px 18px;
+                       background: var(--surface); border: 1px solid var(--border);
+                       border-radius: var(--radius); }
+.diaspora-disclaimer p { font-size: 11px; color: var(--text3); line-height: 1.6; margin: 0; }
+
+/* Responsive */
+@media (max-width: 600px) {
+  .diaspora-grid       { grid-template-columns: 1fr 1fr; }
+  .diaspora-filter-bar { flex-direction: column; align-items: flex-start; }
+}
+
 /* ── Latest uploads feed ──────────────────────────────────── */
 .feed { display: flex; flex-direction: column; gap: 1px; }
 .feed-item { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }

@@ -963,6 +963,71 @@ def compute_investment_score(county_id, fiscal_year=None):
 
 
 # ---------------------------------------------------------------------------
+# === PHASE 2: Diaspora Lens ===
+# ---------------------------------------------------------------------------
+
+_RISK_FLAG_LABELS = {
+    "fiscal_health":      "High pending bills",
+    "execution_capacity": "Low dev. absorption",
+    "governance_quality": "Adverse/Disclaimer audit",
+    "revenue_strength":   "Low own-source revenue",
+}
+
+
+@app.route("/diaspora")
+@login_required
+def diaspora():
+    all_counties = County.query.order_by(County.name).all()
+
+    # Two most recent global fiscal years (for trajectory)
+    year_rows = (db.session.query(FiscalMetric.fiscal_year)
+                 .distinct()
+                 .order_by(FiscalMetric.fiscal_year.desc())
+                 .limit(2).all())
+    fiscal_years = [r[0] for r in year_rows]
+    latest_year = fiscal_years[0] if fiscal_years else None
+    prior_year  = fiscal_years[1] if len(fiscal_years) > 1 else None
+
+    county_scores = []
+    for c in all_counties:
+        curr = compute_investment_score(c.id, fiscal_year=latest_year)
+        if not curr:
+            continue  # no data for this county — skip from lens
+
+        prev  = compute_investment_score(c.id, fiscal_year=prior_year) if prior_year else None
+        delta = (curr["score"] - prev["score"]) if prev else None
+
+        if delta is None:
+            trajectory = "new"
+        elif delta >= 5:
+            trajectory = "improving"
+        elif delta <= -5:
+            trajectory = "deteriorating"
+        else:
+            trajectory = "stable"
+
+        risk_flags = [
+            label for key, label in _RISK_FLAG_LABELS.items()
+            if curr["components"].get(key, {}).get("score", 100) < 40
+        ]
+
+        county_scores.append({
+            "county":     c,
+            "score":      curr,
+            "delta":      delta,
+            "trajectory": trajectory,
+            "risk_flags": risk_flags,
+        })
+
+    county_scores.sort(key=lambda x: x["score"]["score"], reverse=True)
+
+    return render_template("diaspora.html",
+        county_scores=county_scores,
+        latest_year=latest_year,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Routes — counties list
 # ---------------------------------------------------------------------------
 

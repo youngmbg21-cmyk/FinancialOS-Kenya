@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}Diaspora Lens{% endblock %}
+
+{% block breadcrumb %}<span>Diaspora Lens</span>{% endblock %}
+
+{% block content %}
+
+<!-- ── Page header ─────────────────────────────────────────────── -->
+<div class="page-header" style="align-items:flex-start;">
+  <div>
+    <h1 class="page-title">Diaspora Investment Lens</h1>
+    <p class="page-sub" style="max-width:680px;line-height:1.6;">
+      Fiscal intelligence reframed for diaspora investors considering exposure to Kenyan counties
+      — property, business, SACCO operations, or county bonds.
+      Scores are derived from official Controller of Budget and Auditor-General reports.
+      {% if latest_year %}<span class="region-tag" style="margin-left:6px;">Latest data: {{ latest_year }}</span>{% endif %}
+    </p>
+  </div>
+  <div class="header-actions" style="flex-shrink:0;">
+    <span class="region-tag">{{ county_scores | length }} counties with data</span>
+  </div>
+</div>
+
+<!-- ── Methodology bar ─────────────────────────────────────────── -->
+<div class="diaspora-method-bar">
+  <span class="method-pill" title="If you do business with this county or expect timely payment from county-linked counterparties, high pending bills signal payment delays and counterparty risk.">
+    <span class="method-dot" style="background:var(--red);"></span>
+    Pending Bills <span class="method-wt">30%</span>
+  </span>
+  <span class="method-pill" title="Indicates whether infrastructure projects (roads, water, power) actually get executed — affects property values and business operating environment.">
+    <span class="method-dot" style="background:var(--green);"></span>
+    Dev. Absorption <span class="method-wt">25%</span>
+  </span>
+  <span class="method-pill" title="Auditor-General's verdict on financial controls. Qualified or worse opinions suggest higher risk of stuck capital, regulatory surprises, or misuse of public funds.">
+    <span class="method-dot" style="background:var(--cyan);"></span>
+    Audit Opinion <span class="method-wt">25%</span>
+  </span>
+  <span class="method-pill" title="How much of the county's revenue comes from its own economic activity vs national transfers. Higher = more economically self-sustaining.">
+    <span class="method-dot" style="background:var(--yellow);"></span>
+    Own-Source Revenue <span class="method-wt">20%</span>
+  </span>
+</div>
+
+<!-- ── Filter & sort bar ───────────────────────────────────────── -->
+<div class="diaspora-filter-bar">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <span style="font-size:12px;color:var(--text2);">Filter:</span>
+    <button class="btn btn-sm btn-outline diaspora-filter active" data-filter="all">All</button>
+    {% for rating in ['Strong','Stable','Watch','Weak','Distressed'] %}
+    <button class="btn btn-sm btn-ghost diaspora-filter" data-filter="{{ rating }}">{{ rating }}</button>
+    {% endfor %}
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <span style="font-size:12px;color:var(--text2);">Sort:</span>
+    <button class="btn btn-sm btn-outline diaspora-sort active" data-sort="score">Score ↓</button>
+    <button class="btn btn-sm btn-ghost diaspora-sort" data-sort="name">Name</button>
+    <button class="btn btn-sm btn-ghost diaspora-sort" data-sort="trajectory">Trajectory</button>
+    <input class="diaspora-search" id="diasporaSearch" type="text" placeholder="Search county…" oninput="diasporaApplyFilters()">
+  </div>
+</div>
+
+<!-- ── County investment card grid ─────────────────────────────── -->
+<div class="diaspora-grid" id="diasporaGrid">
+  {% for item in county_scores %}
+  {% set sc = item.score %}
+  {% set c  = item.county %}
+  <a href="{{ url_for('county_detail', county_id=c.id) }}" class="diaspora-card"
+     data-rating="{{ sc.rating }}"
+     data-name="{{ c.name | lower }}"
+     data-trajectory="{{ item.trajectory }}"
+     data-score="{{ sc.score }}">
+
+    <!-- County name + region -->
+    <div class="diaspora-card-top">
+      <div>
+        <div class="diaspora-county-name">{{ c.name }}</div>
+        <span class="region-tag" style="margin-top:3px;display:inline-block;">{{ c.region }}</span>
+      </div>
+      <!-- Trajectory arrow -->
+      <div class="diaspora-trajectory diaspora-traj-{{ item.trajectory }}"
+           title="{% if item.delta is not none %}Score {{ '+' if item.delta > 0 else '' }}{{ item.delta | int }} vs prior year{% else %}First year of data{% endif %}">
+        {% if item.trajectory == 'improving' %}↑
+        {% elif item.trajectory == 'deteriorating' %}↓
+        {% elif item.trajectory == 'stable' %}→
+        {% else %}—{% endif %}
+      </div>
+    </div>
+
+    <!-- Score (prominent) + rating badge -->
+    <div class="diaspora-score-row">
+      <span class="diaspora-score-num">{{ sc.score }}</span>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <span class="badge {{ sc.rating | rating_class }}" style="font-size:11px;padding:3px 9px;">{{ sc.rating }}</span>
+        <span style="font-size:10px;color:var(--text3);">of 100 · {{ sc.fiscal_year }}</span>
+      </div>
+    </div>
+
+    <!-- Component mini-bars -->
+    <div class="diaspora-components">
+      {% set comp_meta = [
+        ('fiscal_health',      'Fiscal',  'var(--red)'),
+        ('execution_capacity', 'Exec.',   'var(--green)'),
+        ('governance_quality', 'Govn.',   'var(--cyan)'),
+        ('revenue_strength',   'Revenue', 'var(--yellow)'),
+      ] %}
+      {% for key, short_label, color in comp_meta %}
+      {% set comp = sc.components.get(key) %}
+      <div class="diaspora-comp-row" title="{{ comp.label if comp else 'No data' }}">
+        <span class="diaspora-comp-label">{{ short_label }}</span>
+        <div class="diaspora-comp-bar-wrap">
+          <div class="diaspora-comp-bar" style="width:{{ comp.score if comp else 0 }}%;background:{{ color }};"></div>
+        </div>
+        <span class="diaspora-comp-score">{{ comp.score if comp else '—' }}</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Risk flags -->
+    {% if item.risk_flags %}
+    <div class="diaspora-risks">
+      {% for flag in item.risk_flags %}
+      <span class="diaspora-risk-flag">⚠ {{ flag }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+  </a>
+  {% endfor %}
+
+  {% if not county_scores %}
+  <div class="empty-state-lg" style="grid-column:1/-1;">
+    No fiscal data found. Upload county documents to generate investment scores.
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── No results message (shown by JS filter) ─────────────────── -->
+<div id="diasporaNoResults" style="display:none;" class="empty-state-lg">
+  No counties match the selected filter.
+</div>
+
+<!-- ── Disclaimer footer ───────────────────────────────────────── -->
+<div class="diaspora-disclaimer">
+  <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:var(--text3);flex-shrink:0;margin-top:2px;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+  <p>
+    FinancialOS Kenya provides neutral analysis derived from official Controller of Budget and
+    Auditor-General reports. We do not sell investment products, receive referral fees, or have
+    commercial relationships with SACCOs, banks, developers, or county governments.
+    Always conduct your own due diligence.
+  </p>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// === PHASE 2: Diaspora Lens — filter, sort, search ===
+let _diasporaRating = 'all';
+let _diasporaSort   = 'score';
+let _diasporaSortDir = 1;  // 1 = desc for score/traj, asc for name
+
+function diasporaApplyFilters() {
+  const q      = (document.getElementById('diasporaSearch').value || '').toLowerCase().trim();
+  const cards  = [...document.querySelectorAll('.diaspora-card')];
+  let   visible = 0;
+
+  cards.forEach(card => {
+    const ratingMatch = _diasporaRating === 'all' || card.dataset.rating === _diasporaRating;
+    const nameMatch   = !q || card.dataset.name.includes(q);
+    const show        = ratingMatch && nameMatch;
+    card.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+
+  document.getElementById('diasporaNoResults').style.display = visible === 0 ? 'block' : 'none';
+}
+
+function diasporaSetFilter(rating, btn) {
+  _diasporaRating = rating;
+  document.querySelectorAll('.diaspora-filter').forEach(b => {
+    b.className = b.dataset.filter === rating ? 'btn btn-sm btn-outline diaspora-filter active' : 'btn btn-sm btn-ghost diaspora-filter';
+  });
+  diasporaApplyFilters();
+}
+
+function diasporaSetSort(key, btn) {
+  if (_diasporaSort === key) {
+    _diasporaSortDir *= -1;
+  } else {
+    _diasporaSort   = key;
+    _diasporaSortDir = key === 'name' ? 1 : -1;
+  }
+  document.querySelectorAll('.diaspora-sort').forEach(b => {
+    const active = b.dataset.sort === key;
+    b.className  = active ? 'btn btn-sm btn-outline diaspora-sort active' : 'btn btn-sm btn-ghost diaspora-sort';
+    if (active) {
+      const labels = { score: 'Score', name: 'Name', trajectory: 'Trajectory' };
+      b.textContent = labels[key] + (_diasporaSortDir === 1 ? ' ↑' : ' ↓');
+    } else {
+      b.textContent = { score: 'Score', name: 'Name', trajectory: 'Trajectory' }[b.dataset.sort];
+    }
+  });
+
+  const TRAJ_ORDER = { improving: 0, stable: 1, new: 2, deteriorating: 3 };
+  const grid  = document.getElementById('diasporaGrid');
+  const cards = [...grid.querySelectorAll('.diaspora-card')];
+  cards.sort((a, b) => {
+    if (key === 'name')       return a.dataset.name.localeCompare(b.dataset.name) * _diasporaSortDir;
+    if (key === 'trajectory') return ((TRAJ_ORDER[a.dataset.trajectory] ?? 9) - (TRAJ_ORDER[b.dataset.trajectory] ?? 9)) * _diasporaSortDir;
+    return (parseFloat(b.dataset.score) - parseFloat(a.dataset.score)) * _diasporaSortDir;
+  });
+  cards.forEach(c => grid.appendChild(c));
+}
+
+// Wire buttons
+document.querySelectorAll('.diaspora-filter').forEach(btn => {
+  btn.addEventListener('click', () => diasporaSetFilter(btn.dataset.filter, btn));
+});
+document.querySelectorAll('.diaspora-sort').forEach(btn => {
+  btn.addEventListener('click', () => diasporaSetSort(btn.dataset.sort, btn));
+});
+</script>
+{% endblock %}
