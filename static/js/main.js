@@ -389,3 +389,216 @@ window.opinionBadge = function (op) {
   window.chatSend          = chatSend;
 
 })();
+
+/* =========================================================
+   FiscalOS AI Chatbot — batch 5
+   Inline chart renderers (6 Kenya fiscal chart types)
+   ========================================================= */
+
+(function () {
+
+  const CYAN    = '#00c2ff';
+  const GREEN   = '#22c55e';
+  const AMBER   = '#f59e0b';
+  const RED     = '#ef4444';
+  const PURPLE  = '#a78bfa';
+  const TEAL    = '#14b8a6';
+
+  // Palette for multi-series
+  const PAL = [CYAN, GREEN, AMBER, RED, PURPLE, TEAL,
+               '#fb923c', '#60a5fa', '#f472b6', '#34d399'];
+
+  function _isDark() {
+    return document.documentElement.getAttribute('data-theme') !== 'light';
+  }
+  function _gridColor() { return _isDark() ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.07)'; }
+  function _tickColor() { return _isDark() ? '#8b90a7' : '#5c6280'; }
+
+  function _baseOpts(title) {
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true, labels: { color: _tickColor(), boxWidth: 12, font: { size: 11 } } },
+        title:  { display: !!title, text: title, color: _tickColor(), font: { size: 12, weight: '600' } },
+        tooltip: {
+          backgroundColor: _isDark() ? '#1e2336' : '#fff',
+          titleColor: _isDark() ? '#e6e8f0' : '#1a2040',
+          bodyColor:  _tickColor(),
+          borderColor: _isDark() ? '#2a3047' : '#dde1ee',
+          borderWidth: 1, cornerRadius: 6, padding: 10,
+        },
+      },
+      scales: {
+        x: { ticks: { color: _tickColor(), font: { size: 11 } }, grid: { color: _gridColor() } },
+        y: { ticks: { color: _tickColor(), font: { size: 11 } }, grid: { color: _gridColor() } },
+      },
+    };
+  }
+
+  // ── 1. revenue_trend ────────────────────────────────────────
+  // Line chart: Total Revenue vs Own-Source Revenue over 5 fiscal years
+  function renderRevenueTrend(canvas, ctx) {
+    const years = ['FY2020', 'FY2021', 'FY2022', 'FY2023', 'FY2024'];
+    // Synthetic illustrative data — real data comes from /api/chat context
+    const total = [4200, 4450, 4780, 5100, 5340];
+    const osr   = [620,  680,  720,  790,  850];
+    const opts  = _baseOpts('Revenue Trend (KES M)');
+    opts.scales.y.ticks.callback = v => `${(v/1000).toFixed(1)}B`;
+    new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: years,
+        datasets: [
+          { label: 'Total Revenue', data: total, borderColor: CYAN,  backgroundColor: CYAN+'22',  tension: 0.35, fill: true, pointRadius: 4 },
+          { label: 'OSR',           data: osr,   borderColor: GREEN, backgroundColor: GREEN+'22', tension: 0.35, fill: true, pointRadius: 4 },
+        ],
+      },
+      options: opts,
+    });
+  }
+
+  // ── 2. osr_trend ────────────────────────────────────────────
+  // Bar chart: OSR as % of total revenue over years
+  function renderOsrTrend(canvas, ctx) {
+    const years = ['FY2020', 'FY2021', 'FY2022', 'FY2023', 'FY2024'];
+    const pct   = [14.8, 15.3, 15.1, 15.5, 15.9];
+    const opts  = _baseOpts('Own-Source Revenue (% of Total)');
+    opts.scales.y.max = 40;
+    opts.scales.y.ticks.callback = v => v + '%';
+    delete opts.scales.x;
+    new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: years,
+        datasets: [{ label: 'OSR %', data: pct, backgroundColor: PAL.map(c => c + 'bb'), borderRadius: 4 }],
+      },
+      options: opts,
+    });
+  }
+
+  // ── 3. expenditure_breakdown ─────────────────────────────────
+  // Doughnut: Personnel / Operations / Development / Pending Bills
+  function renderExpenditureBreakdown(canvas) {
+    const labels = ['Personnel', 'Operations', 'Development', 'Pending Bills'];
+    const values = [42, 28, 22, 8];
+    const opts = {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { color: _tickColor(), boxWidth: 12, font: { size: 11 } } },
+        title:  { display: true, text: 'Expenditure Breakdown (%)', color: _tickColor(), font: { size: 12, weight: '600' } },
+        tooltip: {
+          backgroundColor: _isDark() ? '#1e2336' : '#fff',
+          titleColor: _isDark() ? '#e6e8f0' : '#1a2040',
+          bodyColor:  _tickColor(),
+          borderColor: _isDark() ? '#2a3047' : '#dde1ee',
+          borderWidth: 1, cornerRadius: 6, padding: 10,
+          callbacks: { label: c => ` ${c.label}: ${c.parsed}%` },
+        },
+      },
+    };
+    new Chart(canvas, {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{ data: values, backgroundColor: [CYAN, GREEN, AMBER, RED], borderWidth: 0, hoverOffset: 8 }],
+      },
+      options: opts,
+    });
+  }
+
+  // ── 4. audit_history ────────────────────────────────────────
+  // Stacked bar: Clean / Qualified / Adverse / Disclaimer per year
+  function renderAuditHistory(canvas) {
+    const years  = ['FY2019', 'FY2020', 'FY2021', 'FY2022', 'FY2023'];
+    const clean  = [18, 20, 22, 24, 26];
+    const qual   = [16, 16, 15, 14, 13];
+    const adv    = [8,  7,  6,  5,  5];
+    const disc   = [5,  4,  4,  4,  3];
+    const opts   = _baseOpts('Audit Opinions Across Counties');
+    opts.scales.x.stacked = true;
+    opts.scales.y.stacked = true;
+    opts.scales.y.ticks.callback = v => v + ' counties';
+    new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: years,
+        datasets: [
+          { label: 'Clean',      data: clean, backgroundColor: GREEN + 'cc', borderRadius: 2 },
+          { label: 'Qualified',  data: qual,  backgroundColor: AMBER + 'cc', borderRadius: 2 },
+          { label: 'Adverse',    data: adv,   backgroundColor: RED   + 'cc', borderRadius: 2 },
+          { label: 'Disclaimer', data: disc,  backgroundColor: PURPLE+ 'cc', borderRadius: 2 },
+        ],
+      },
+      options: opts,
+    });
+  }
+
+  // ── 5. county_comparison ────────────────────────────────────
+  // Horizontal bar: top 8 counties by total revenue
+  function renderCountyComparison(canvas) {
+    const labels = ['Nairobi','Mombasa','Kisumu','Nakuru','Kiambu','Machakos','Uasin Gishu','Meru'];
+    const values = [38000, 12000, 8500, 7800, 7200, 4800, 4200, 3900];
+    const opts   = _baseOpts('County Revenue Comparison (KES M)');
+    opts.indexAxis = 'y';
+    opts.scales.x.ticks.callback = v => `${(v/1000).toFixed(0)}B`;
+    delete opts.scales.y.grid;
+    new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{ label: 'Total Revenue', data: values,
+          backgroundColor: PAL.slice(0, labels.length).map(c => c + 'cc'),
+          borderRadius: 4 }],
+      },
+      options: opts,
+    });
+  }
+
+  // ── 6. pending_bills ────────────────────────────────────────
+  // Line + bar combo: pending bills trend vs absorption rate
+  function renderPendingBills(canvas) {
+    const years      = ['FY2020', 'FY2021', 'FY2022', 'FY2023', 'FY2024'];
+    const bills      = [320, 380, 290, 410, 350];
+    const absorption = [72, 68, 75, 71, 74];
+    const opts = _baseOpts('Pending Bills (KES M) & Absorption Rate (%)');
+    opts.scales.y  = { position: 'left',  ticks: { color: _tickColor(), callback: v => v+'M' }, grid: { color: _gridColor() } };
+    opts.scales.y1 = { position: 'right', ticks: { color: _tickColor(), callback: v => v+'%' }, grid: { drawOnChartArea: false } };
+    new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: years,
+        datasets: [
+          { type: 'bar',  label: 'Pending Bills',    data: bills,      backgroundColor: RED   +'99', yAxisID: 'y',  borderRadius: 4 },
+          { type: 'line', label: 'Absorption Rate %', data: absorption, borderColor: CYAN,           yAxisID: 'y1',
+            backgroundColor: CYAN+'22', tension: 0.4, fill: false, pointRadius: 4 },
+        ],
+      },
+      options: opts,
+    });
+  }
+
+  // ── Dispatcher ───────────────────────────────────────────────
+  window.fosRenderChart = function (container, type, ctx) {
+    const canvas = container.querySelector('canvas');
+    if (!canvas) return;
+    canvas.height = 220;
+
+    const map = {
+      revenue_trend:          renderRevenueTrend,
+      osr_trend:              renderOsrTrend,
+      expenditure_breakdown:  renderExpenditureBreakdown,
+      audit_history:          renderAuditHistory,
+      county_comparison:      renderCountyComparison,
+      pending_bills:          renderPendingBills,
+    };
+
+    const fn = map[type];
+    if (fn) {
+      fn(canvas, ctx);
+    } else {
+      container.innerHTML = `<span style="color:var(--text-muted);font-size:11px;">Unknown chart type: ${type}</span>`;
+    }
+  };
+
+})();
