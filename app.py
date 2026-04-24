@@ -1123,6 +1123,10 @@ def county_detail(county_id):
 
     inv_score = compute_investment_score(county_id, fiscal_year=latest_year)
 
+    # === PHASE 3: prior-year score for trajectory line in County Brief ===
+    prior_year = sorted_years[-2] if len(sorted_years) >= 2 else None
+    inv_score_prior = compute_investment_score(county_id, fiscal_year=prior_year) if prior_year else None
+
     return render_template("county.html",
         county=county,
         documents=documents,
@@ -1134,6 +1138,7 @@ def county_detail(county_id):
         latest_year=latest_year,
         latest_audit=latest_audit,
         inv_score=inv_score,
+        inv_score_prior=inv_score_prior,
     )
 
 

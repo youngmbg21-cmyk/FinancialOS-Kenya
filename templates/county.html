@@ -21,6 +21,13 @@
     {% if current_user.can_export() %}
     <a href="/api/export/csv?county_id={{ county.id }}" class="btn btn-outline btn-sm">Export CSV</a>
     {% endif %}
+    {# === PHASE 3: County Brief button === #}
+    {% if inv_score %}
+    <button class="btn btn-primary btn-sm" onclick="generateBrief()">
+      <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;vertical-align:middle;margin-right:4px;"><path d="M19 8l-4-4H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V8zm-5 8H8v-2h6v2zm2-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+      Generate Brief
+    </button>
+    {% endif %}
   </div>
 </div>
 
@@ -227,6 +234,224 @@
     <p class="ai-placeholder">Click "Generate Analysis" to run the fiscal intelligence engine for {{ county.name }}.</p>
   </div>
 </div>
+
+{# ═══════════════════════════════════════════════════════════════════════
+   === PHASE 3: County Brief — hidden print-only div ==================
+   Pre-populated by Jinja2; printed via window.print() + @media print CSS
+   ════════════════════════════════════════════════════════════════════ #}
+{% if inv_score %}
+{% set sc = inv_score %}
+{% set comps = sc.components %}
+
+{# Derive trajectory vs prior year #}
+{% if inv_score_prior %}
+  {% set delta = sc.score - inv_score_prior.score %}
+  {% if delta >= 5 %}{% set traj_label = "Improving" %}{% set traj_arrow = "↑" %}
+  {% elif delta <= -5 %}{% set traj_label = "Deteriorating" %}{% set traj_arrow = "↓" %}
+  {% else %}{% set traj_label = "Stable" %}{% set traj_arrow = "→" %}{% endif %}
+  {% set traj_note = traj_arrow ~ " " ~ traj_label ~ " (" ~ ('+' if delta > 0 else '') ~ delta | int ~ " pts vs " ~ inv_score_prior.fiscal_year ~ ")" %}
+{% else %}
+  {% set traj_note = "— First year of data" %}
+{% endif %}
+
+{# Component interpretation lookup #}
+{% set interp = {
+  'fiscal_health': {
+    100: 'Low pending bills — counterparty payment risk is minimal.',
+    80:  'Manageable pending bills — minor payment delays possible.',
+    60:  'Moderate pending bills — payment delays are a concern.',
+    40:  'Elevated pending bills — significant counterparty risk.',
+    20:  'High pending bills — serious counterparty payment risk.',
+  },
+  'execution_capacity': {
+    100: 'Strong project execution — development infrastructure is actively delivered.',
+    85:  'Good execution capacity — most development projects proceed.',
+    70:  'Adequate execution — development spending is reasonable.',
+    55:  'Below-average dev. spend — infrastructure delivery is slow.',
+    40:  'Low dev. absorption — projects frequently stall or are delayed.',
+    25:  'Very low execution — development budgets largely unspent.',
+  },
+  'governance_quality': {
+    100: 'Clean (Unqualified) audit — financial controls are reliable.',
+    65:  'Qualified audit — minor control weaknesses noted by OAG.',
+    30:  'Adverse audit — material misstatements or concerns raised.',
+    15:  'Disclaimer — auditor was unable to form an opinion.',
+    50:  'No audit data available — governance quality is unrated.',
+  },
+  'revenue_strength': {
+    100: 'Strong own-source base — county is economically self-sustaining.',
+    85:  'Good OSR — limited dependence on national transfers.',
+    70:  'Moderate OSR — some own-revenue generation.',
+    55:  'Below-average OSR — significant transfer dependence.',
+    40:  'Low OSR — heavily reliant on equitable share transfers.',
+    25:  'Very low OSR — almost entirely transfer-dependent.',
+  },
+} %}
+
+{# Sorted components for strengths/risks #}
+{% set comp_order = ['fiscal_health','execution_capacity','governance_quality','revenue_strength'] %}
+{% set comp_names = {
+  'fiscal_health':      'Fiscal Health',
+  'execution_capacity': 'Execution Capacity',
+  'governance_quality': 'Governance Quality',
+  'revenue_strength':   'Revenue Strength',
+} %}
+{% set comp_weights = {
+  'fiscal_health':      '30%',
+  'execution_capacity': '25%',
+  'governance_quality': '25%',
+  'revenue_strength':   '20%',
+} %}
+
+<div class="brief-print" id="countyBrief">
+
+  {# ── Watermark ── #}
+  <div class="brief-watermark">FinancialOS Kenya</div>
+
+  {# ── Header ── #}
+  <div class="brief-header">
+    <div class="brief-branding">FinancialOS Kenya — County Brief</div>
+    <div class="brief-county-name">{{ county.name }} County</div>
+    <div class="brief-meta">
+      {{ county.region }} Region · County Code {{ '%02d' % county.code }}
+      {% if county.population %} · Pop. {{ county.population | fmt_number }}{% endif %}
+      · As of Fiscal Year {{ sc.fiscal_year }}
+    </div>
+    <div class="brief-gendate">Generated: <span id="briefGenDate"></span></div>
+  </div>
+
+  {# ── Score block ── #}
+  <div class="brief-score-block">
+    <div class="brief-score-left">
+      <div class="brief-score-num">{{ sc.score }}</div>
+      <div class="brief-score-denom">/100</div>
+    </div>
+    <div class="brief-score-right">
+      <div class="brief-rating-label">{{ sc.rating }}</div>
+      <div class="brief-trajectory">{{ traj_note }}</div>
+      <div class="brief-score-caption">Investment Score · {{ sc.fiscal_year }}</div>
+    </div>
+  </div>
+
+  {# ── Score breakdown table ── #}
+  <div class="brief-section">
+    <div class="brief-section-title">Score Breakdown</div>
+    <table class="brief-table">
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Weight</th>
+          <th>Score</th>
+          <th>Interpretation</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for key in comp_order %}
+        {% set comp = comps.get(key) %}
+        <tr>
+          <td><strong>{{ comp_names[key] }}</strong></td>
+          <td>{{ comp_weights[key] }}</td>
+          <td>{% if comp %}{{ comp.score }}{% else %}N/A{% endif %}</td>
+          <td>
+            {% if comp %}
+              {{ interp[key].get(comp.score, interp[key].get(50, '—')) }}
+              <span class="brief-raw">({{ comp.label }})</span>
+            {% else %}
+              No data — excluded, weight redistributed.
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="brief-method-note">{{ sc.methodology }}</p>
+  </div>
+
+  {# ── Key Strengths & Key Risks ── #}
+  <div class="brief-two-col">
+    <div class="brief-section">
+      <div class="brief-section-title brief-green">Key Strengths</div>
+      {% set strengths = comps.items() | selectattr('1.score', 'gt', 70) | sort(attribute='1.score', reverse=true) | list %}
+      {% if strengths %}
+        {% for key, comp in strengths[:2] %}
+        <div class="brief-point brief-point-good">
+          <strong>{{ comp_names[key] }} ({{ comp.score }})</strong> —
+          {{ interp[key].get(comp.score, '') }}
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="brief-point">No component scored above 70.</div>
+      {% endif %}
+    </div>
+    <div class="brief-section">
+      <div class="brief-section-title brief-red">Key Risks</div>
+      {% set risks = comps.items() | selectattr('1.score', 'lt', 60) | sort(attribute='1.score') | list %}
+      {% if risks %}
+        {% for key, comp in risks[:2] %}
+        <div class="brief-point brief-point-risk">
+          <strong>{{ comp_names[key] }} ({{ comp.score }})</strong> —
+          {{ interp[key].get(comp.score, '') }}
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="brief-point">No component scored below 60.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Latest audit ── #}
+  <div class="brief-section">
+    <div class="brief-section-title">Latest Audit Opinion</div>
+    {% if latest_audit %}
+    <p>
+      <strong>{{ latest_audit.opinion_type | opinion_label }}</strong>
+      — Fiscal Year {{ latest_audit.fiscal_year }}
+      · {{ latest_audit.material_issues }} material issue{{ 's' if latest_audit.material_issues != 1 }}.
+    </p>
+    {% set obs = latest_audit.observations_list() %}
+    {% if obs %}
+    <ul class="brief-obs-list">
+      {% for o in obs[:4] %}<li>{{ o }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% else %}
+    <p>No audit opinion on record.</p>
+    {% endif %}
+  </div>
+
+  {# ── Source documents ── #}
+  <div class="brief-section">
+    <div class="brief-section-title">Source Documents</div>
+    {% set processed_docs = documents | selectattr('processing_status', 'eq', 'completed') | list %}
+    {% if processed_docs %}
+    <ul class="brief-sources">
+      {% for doc in processed_docs[:8] %}
+      <li>{{ doc.original_filename }}{% if doc.fiscal_year %} · FY{{ doc.fiscal_year }}{% endif %}{% if doc.source_type %} · {{ doc.source_type }}{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p>No processed source documents on record.</p>
+    {% endif %}
+  </div>
+
+  {# ── Footer ── #}
+  <div class="brief-footer">
+    <div class="brief-footer-brand">FinancialOS Kenya · County Fiscal Intelligence Platform</div>
+    <p class="brief-disclaimer">
+      FinancialOS Kenya provides neutral analysis derived from official Controller of Budget and
+      Auditor-General reports. We do not sell investment products, receive referral fees, or have
+      commercial relationships with SACCOs, banks, developers, or county governments.
+      Always conduct your own due diligence.
+    </p>
+    <p class="brief-method-link">
+      Score methodology: Fiscal Health 30% · Execution Capacity 25% · Governance Quality 25% · Revenue Strength 20%.
+      Missing components excluded and weights redistributed proportionally.
+    </p>
+  </div>
+
+</div><!-- /.brief-print -->
+{% endif %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -304,6 +529,13 @@ function loadAnalysis() {
         <div class="ai-recs"><h4>Recommendations</h4><ol>${(d.recommendations||[]).map(r=>`<li>${r}</li>`).join('')}</ol></div>`;
     })
     .catch(() => { panel.innerHTML = '<p class="ai-error">Analysis unavailable.</p>'; });
+}
+
+// === PHASE 3: Generate County Brief ===
+function generateBrief() {
+  const el = document.getElementById('briefGenDate');
+  if (el) el.textContent = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  window.print();
 }
 </script>
 {% endblock %}
