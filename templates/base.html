@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}FinancialOS Kenya{% endblock %} — County Fiscal Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<!-- ═══════════════════════════ SIDEBAR ═══════════════════════════ -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">
+    <span class="logo-mark">FOS</span>
+    <div class="logo-text">
+      <span class="logo-primary">FinancialOS</span>
+      <span class="logo-sub">Kenya · Fiscal Intelligence</span>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <a href="{{ url_for('dashboard') }}"
+       class="nav-item {% if request.endpoint == 'dashboard' %}active{% endif %}">
+      <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+      Dashboard
+    </a>
+    <a href="{{ url_for('counties') }}"
+       class="nav-item {% if request.endpoint in ('counties','county_detail') %}active{% endif %}">
+      <svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+      Counties
+    </a>
+    <a href="{{ url_for('library') }}"
+       class="nav-item {% if request.endpoint in ('library','document_detail') %}active{% endif %}">
+      <svg viewBox="0 0 24 24"><path d="M20 6h-2.18c.07-.44.18-.88.18-1.36C18 2.06 15.94 0 13.36 0c-1.33 0-2.51.54-3.36 1.44C9.15.54 7.97 0 6.64 0 4.06 0 2 2.06 2 4.64c0 .48.11.92.18 1.36H0v14h20V6zm-6.64-4c1.03 0 1.82.79 1.82 1.82 0 1.03-.79 1.82-1.82 1.82h-2.23l-.01-.06C11.14 4.06 11.93 2 13.36 2zM6.64 2c1.43 0 2.22 2.06 2.24 3.58l-.01.06H6.64c-1.03 0-1.82-.79-1.82-1.82C4.82 2.79 5.61 2 6.64 2zM2 18V8h7v10H2zm9 0V8h7v10h-7z"/></svg>
+      Document Library
+    </a>
+    <a href="{{ url_for('compare') }}"
+       class="nav-item {% if request.endpoint == 'compare' %}active{% endif %}">
+      <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/><path d="M16 6l-1.41 1.41L19.17 12l-4.58 4.59L16 18l6-6zM1 6L2.41 7.41 7 12l-4.59 4.59L1 18l6-6z" transform="scale(-1,1) translate(-8,0)"/></svg>
+      Compare Counties
+    </a>
+
+    {% if current_user.is_authenticated and current_user.can_upload() %}
+    <div class="nav-divider"></div>
+    <a href="{{ url_for('admin_upload') }}"
+       class="nav-item {% if request.endpoint == 'admin_upload' %}active{% endif %}">
+      <svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+      Upload Documents
+    </a>
+    {% endif %}
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="user-chip">
+      <div class="user-avatar">{{ current_user.username[0].upper() if current_user.is_authenticated else '?' }}</div>
+      <div class="user-info">
+        <span class="user-name">{{ current_user.username if current_user.is_authenticated else 'Guest' }}</span>
+        <span class="user-role role-{{ current_user.role if current_user.is_authenticated else 'viewer' }}">
+          {{ (current_user.role if current_user.is_authenticated else 'viewer') | title }}
+        </span>
+      </div>
+    </div>
+    <a href="{{ url_for('logout') }}" class="btn-logout" title="Sign out">
+      <svg viewBox="0 0 24 24"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+    </a>
+  </div>
+</aside>
+
+<!-- ═══════════════════════════ MAIN WRAPPER ═══════════════════════════ -->
+<div class="main-wrapper">
+
+  <!-- topbar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="sidebar-toggle" onclick="document.getElementById('sidebar').classList.toggle('collapsed')">
+        <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+      </button>
+      <nav class="breadcrumb">
+        {% block breadcrumb %}<span>Dashboard</span>{% endblock %}
+      </nav>
+    </div>
+    <div class="topbar-right">
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme">
+        <svg class="icon-sun" viewBox="0 0 24 24"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a1 1 0 00-1.41 0 1 1 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a1 1 0 00-1.41 0 1 1 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0a1 1 0 000-1.41l-1.06-1.06zm1.06-12.37l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06a1 1 0 000-1.41 1 1 0 00-1.41 0zM7.05 18.36l-1.06 1.06a1 1 0 000 1.41 1 1 0 001.41 0l1.06-1.06c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0z"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24"><path d="M12 3a9 9 0 109 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 01-4.4 2.26 5.403 5.403 0 01-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+      </button>
+      <span class="topbar-tag">Kenya · 47 Counties</span>
+    </div>
+  </header>
+
+  <!-- flash messages -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  <div class="flash-container">
+    {% for category, message in messages %}
+    <div class="flash flash-{{ category }}">
+      {{ message }}
+      <button onclick="this.parentElement.remove()">×</button>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endwith %}
+
+  <!-- page content -->
+  <main class="page-content">
+    {% block content %}{% endblock %}
+  </main>
+
+</div><!-- /main-wrapper -->
+
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
