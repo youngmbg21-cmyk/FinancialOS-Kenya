@@ -1690,10 +1690,10 @@ def api_doc_status(doc_id):
 # ---------------------------------------------------------------------------
 
 def _call_claude(system_prompt: str, user_message: str, max_tokens: int = 900) -> str:
-    """Call Claude Haiku and return the response text. Raises on any error."""
+    """Call Claude Opus 4.7 and return the response text. Raises on any error."""
     client = anthropic.Anthropic(api_key=app.config["ANTHROPIC_API_KEY"])
     resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-opus-4-7",
         max_tokens=max_tokens,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
@@ -1850,7 +1850,7 @@ def api_chat():
     try:
         client   = anthropic.Anthropic(api_key=app.config["ANTHROPIC_API_KEY"])
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-opus-4-7",
             max_tokens=1200,
             system=_build_system_prompt(page, county_id, mode),
             messages=[{"role": m["role"], "content": m["content"]} for m in messages[-20:]],
@@ -2052,6 +2052,175 @@ def api_investor_note(county_id):
     except Exception as exc:
         app.logger.error("Investor note error: %s", exc)
         return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Data Health — completeness scoring and per-county audit
+# ---------------------------------------------------------------------------
+
+def _compute_data_health() -> dict:
+    counties_total = 47
+
+    counties_covered = (
+        db.session.query(Document.county_id)
+        .filter(Document.processing_status == "completed")
+        .filter(Document.county_id.isnot(None))
+        .distinct()
+        .count()
+    )
+    years_covered = (
+        db.session.query(FiscalMetric.fiscal_year)
+        .filter(FiscalMetric.fiscal_year.isnot(None))
+        .distinct()
+        .count()
+    )
+    total_docs     = Document.query.count()
+    processed_docs = Document.query.filter_by(processing_status="completed").count()
+    failed_docs    = Document.query.filter_by(processing_status="failed").count()
+    pending_docs   = Document.query.filter(
+        Document.processing_status.in_(["pending", "processing"])
+    ).count()
+
+    doc_types_count = (
+        db.session.query(Document.doc_type)
+        .filter(Document.processing_status == "completed")
+        .filter(Document.doc_type.isnot(None))
+        .distinct()
+        .count()
+    )
+
+    county_data = []
+    for county in County.query.order_by(County.name).all():
+        doc_count = Document.query.filter_by(
+            county_id=county.id, processing_status="completed"
+        ).count()
+        metrics = FiscalMetric.query.filter_by(county_id=county.id).all()
+        audit   = (
+            AuditOpinion.query.filter_by(county_id=county.id)
+            .order_by(AuditOpinion.fiscal_year.desc())
+            .first()
+        )
+
+        years             = sorted({m.fiscal_year for m in metrics if m.fiscal_year})
+        has_revenue       = any(m.total_revenue       for m in metrics)
+        has_expenditure   = any(m.total_expenditure   for m in metrics)
+        has_pending_bills = any(m.pending_bills       for m in metrics)
+        has_audit         = audit is not None
+        metrics_count     = sum([has_revenue, has_expenditure, has_pending_bills, has_audit])
+
+        if doc_count == 0:
+            status = "missing"
+        elif metrics_count >= 3:
+            status = "good"
+        elif metrics_count >= 1:
+            status = "partial"
+        else:
+            status = "uploaded"
+
+        county_data.append({
+            "county":           county,
+            "doc_count":        doc_count,
+            "years":            years,
+            "has_revenue":      has_revenue,
+            "has_expenditure":  has_expenditure,
+            "has_pending_bills":has_pending_bills,
+            "has_audit":        has_audit,
+            "metrics_count":    metrics_count,
+            "status":           status,
+        })
+
+    covered = [c for c in county_data if c["doc_count"] > 0]
+    avg_metrics = (
+        sum(c["metrics_count"] for c in covered) / len(covered) if covered else 0
+    )
+
+    coverage_score  = (counties_covered / counties_total) * 40
+    year_score      = min(years_covered / 3, 1.0) * 20
+    metric_score    = (avg_metrics / 4) * 25
+    diversity_score = min(doc_types_count / 3, 1.0) * 15
+    total_score     = int(coverage_score + year_score + metric_score + diversity_score)
+
+    if total_score >= 80:
+        readiness, readiness_class = "Fully Operational",   "success"
+    elif total_score >= 60:
+        readiness, readiness_class = "Mostly Operational",  "info"
+    elif total_score >= 40:
+        readiness, readiness_class = "Partially Operational", "warning"
+    elif total_score >= 20:
+        readiness, readiness_class = "Limited Data",        "danger"
+    else:
+        readiness, readiness_class = "Insufficient Data",   "critical"
+
+    gaps = []
+    if counties_covered < counties_total:
+        gaps.append(f"{counties_total - counties_covered} counties have no documents uploaded yet")
+    if years_covered == 0:
+        gaps.append("No fiscal year data has been extracted yet — upload and process PDFs")
+    elif years_covered < 3:
+        gaps.append(f"Only {years_covered} fiscal year(s) covered — 3+ years recommended for trend analysis")
+    missing_revenue = sum(1 for c in county_data if c["doc_count"] > 0 and not c["has_revenue"])
+    if missing_revenue:
+        gaps.append(f"{missing_revenue} counties with documents are missing revenue figures")
+    missing_audit = sum(1 for c in county_data if c["doc_count"] > 0 and not c["has_audit"])
+    if missing_audit:
+        gaps.append(f"{missing_audit} counties with documents are missing audit opinions")
+    if failed_docs:
+        gaps.append(f"{failed_docs} document(s) failed processing — re-upload or reprocess them")
+
+    return {
+        "score":           total_score,
+        "readiness":       readiness,
+        "readiness_class": readiness_class,
+        "counties_total":  counties_total,
+        "counties_covered":counties_covered,
+        "years_covered":   years_covered,
+        "total_docs":      total_docs,
+        "processed_docs":  processed_docs,
+        "failed_docs":     failed_docs,
+        "pending_docs":    pending_docs,
+        "doc_types_count": doc_types_count,
+        "county_data":     county_data,
+        "gaps":            gaps,
+    }
+
+
+@app.route("/admin/data-health")
+@login_required
+@admin_required
+def data_health():
+    health = _compute_data_health()
+    return render_template("data_health.html", health=health)
+
+
+@app.route("/api/data-health")
+@login_required
+def api_data_health():
+    h = _compute_data_health()
+    return jsonify({
+        "score":            h["score"],
+        "readiness":        h["readiness"],
+        "counties_covered": h["counties_covered"],
+        "counties_total":   h["counties_total"],
+        "years_covered":    h["years_covered"],
+        "processed_docs":   h["processed_docs"],
+        "failed_docs":      h["failed_docs"],
+        "gaps":             h["gaps"],
+        "county_summary": [
+            {
+                "id":               c["county"].id,
+                "name":             c["county"].name,
+                "region":           c["county"].region,
+                "doc_count":        c["doc_count"],
+                "years":            c["years"],
+                "has_revenue":      c["has_revenue"],
+                "has_expenditure":  c["has_expenditure"],
+                "has_pending_bills":c["has_pending_bills"],
+                "has_audit":        c["has_audit"],
+                "status":           c["status"],
+            }
+            for c in h["county_data"]
+        ],
+    })
 
 
 # ---------------------------------------------------------------------------

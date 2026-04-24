@@ -60,6 +60,11 @@
       <svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
       Upload Documents
     </a>
+    <a href="{{ url_for('data_health') }}"
+       class="nav-item {% if request.endpoint == 'data_health' %}active{% endif %}">
+      <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14l-5-5 1.41-1.41L12 14.17l7.59-7.59L21 8l-9 9z"/></svg>
+      Data Health
+    </a>
     {% endif %}
   </nav>
 
