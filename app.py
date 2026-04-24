@@ -5,15 +5,22 @@ Batch 1: Core scaffold, models, auth, template filters, entry point.
 """
 
 import os
+import re
+import io
+import csv
 import json
 import uuid
+import threading
 from datetime import datetime
 from functools import wraps
 
-from flask import Flask, render_template, redirect, url_for, abort
+from flask import (Flask, render_template, redirect, url_for, abort,
+                   request, flash, jsonify, send_file, session)
 from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, current_user
+from flask_login import (LoginManager, UserMixin, login_user, logout_user,
+                         login_required, current_user)
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
 # ---------------------------------------------------------------------------
 # Optional dependencies — degrade gracefully if not installed yet
@@ -407,12 +414,251 @@ def server_error(e):
 
 
 # ---------------------------------------------------------------------------
-# Placeholder index — replaced in Batch 2 when real routes are added
+# PDF processing engine
 # ---------------------------------------------------------------------------
 
-@app.route("/health")
-def health():
-    return {"status": "ok", "pdf_engine": PDF_AVAILABLE, "ai_engine": AI_AVAILABLE}
+_COUNTY_NAMES = [name for _, name, _ in KENYA_COUNTIES]
+
+_COUNTY_ALIASES = {
+    "nairobi":       "Nairobi City",
+    "nrb":           "Nairobi City",
+    "mombasa":       "Mombasa",
+    "msa":           "Mombasa",
+    "kisumu":        "Kisumu",
+    "nakuru":        "Nakuru",
+    "eldoret":       "Uasin Gishu",
+    "uasin gishu":   "Uasin Gishu",
+    "kakamega":      "Kakamega",
+    "kiambu":        "Kiambu",
+    "machakos":      "Machakos",
+    "meru":          "Meru",
+    "kilifi":        "Kilifi",
+    "bungoma":       "Bungoma",
+    "homa bay":      "Homa Bay",
+    "homabay":       "Homa Bay",
+    "trans nzoia":   "Trans Nzoia",
+    "transnzoia":    "Trans Nzoia",
+    "tharaka nithi": "Tharaka Nithi",
+    "tharaka-nithi": "Tharaka Nithi",
+    "elgeyo marakwet": "Elgeyo Marakwet",
+    "murang'a":      "Murang'a",
+    "muranga":       "Murang'a",
+}
+
+
+def allowed_file(filename: str) -> bool:
+    return (
+        "." in filename
+        and filename.rsplit(".", 1)[1].lower() in app.config["ALLOWED_EXTENSIONS"]
+    )
+
+
+def extract_pdf_metadata(filepath: str):
+    """Return (page_count, detected_title, full_text) from a PDF file."""
+    if not PDF_AVAILABLE or not filepath or not os.path.exists(filepath):
+        return None, None, None
+    try:
+        with pdfplumber.open(filepath) as pdf:
+            page_count = len(pdf.pages)
+            # First 3 pages for title detection
+            head_text = ""
+            for page in pdf.pages[:3]:
+                head_text += (page.extract_text() or "")
+            title = _detect_title(head_text)
+            # Full text capped at 120 pages for performance
+            full_text = ""
+            for page in pdf.pages[:120]:
+                full_text += (page.extract_text() or "") + "\n"
+            return page_count, title, full_text
+    except Exception as exc:
+        app.logger.error("PDF extraction failed for %s: %s", filepath, exc)
+        return None, None, None
+
+
+def _detect_title(text: str) -> str | None:
+    if not text:
+        return None
+    keywords = ("report", "budget", "audit", "review", "annual", "county",
+                 "fiscal", "implementation", "expenditure", "revenue")
+    lines = [ln.strip() for ln in text.splitlines() if len(ln.strip()) > 15]
+    for line in lines[:15]:
+        if any(kw in line.lower() for kw in keywords):
+            return line[:300]
+    return lines[0][:300] if lines else None
+
+
+def detect_county_from_text(text: str) -> str | None:
+    if not text:
+        return None
+    tl = text.lower()
+    # Aliases first (longer phrases before substrings)
+    for alias in sorted(_COUNTY_ALIASES, key=len, reverse=True):
+        if alias in tl:
+            return _COUNTY_ALIASES[alias]
+    for name in _COUNTY_NAMES:
+        if name.lower() in tl:
+            return name
+    return None
+
+
+def detect_fiscal_year(text: str) -> str | None:
+    if not text:
+        return None
+    patterns = [
+        r"financial\s+year\s+(20\d\d/\d\d)",
+        r"fiscal\s+year\s+(20\d\d/\d\d)",
+        r"(20\d\d/\d\d)\s+financial\s+year",
+        r"year\s+ended\s+30\s+june\s+(20\d\d)",
+        r"year\s+ended\s+june\s+30[,\s]+(20\d\d)",
+        r"(20\d\d)[–\-](20\d\d)\s+financial",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            raw = m.group(1)
+            if "/" not in raw:          # e.g. "2023" → "2023/24"
+                raw = f"{raw}/{str(int(raw) + 1)[2:]}"
+            return raw
+    return None
+
+
+def detect_source_from_text(text: str) -> str | None:
+    if not text:
+        return None
+    tl = text.lower()
+    if "controller of budget" in tl or "budget implementation" in tl:
+        return "CoB"
+    if "auditor-general" in tl or "auditor general" in tl or "office of the auditor" in tl:
+        return "OAG"
+    if "commission on revenue allocation" in tl:
+        return "CRA"
+    return "Other"
+
+
+def _parse_amount(raw: str) -> float | None:
+    """Parse a raw numeric string (with commas) into a KES-millions float."""
+    if not raw:
+        return None
+    cleaned = re.sub(r"[,\s]", "", raw)
+    try:
+        value = float(cleaned)
+        # CoB figures are typically already in millions; very large values are in KES units
+        if value > 1_000_000_000:
+            value /= 1_000_000
+        elif value > 1_000_000:
+            value /= 1_000
+        return value if value > 0 else None
+    except ValueError:
+        return None
+
+
+# --- Metric regex patterns ---------------------------------------------------
+
+METRIC_PATTERNS: dict[str, list[str]] = {
+    "total_revenue": [
+        r"total\s+revenue[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"total\s+receipts\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"revenue\s+receipts\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+    ],
+    "own_source_revenue": [
+        r"own[-\s]source\s+revenue[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"local(?:ly generated)?\s+revenue[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"internally\s+generated\s+revenue[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+    ],
+    "equitable_share": [
+        r"equitable\s+share\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"shareable\s+revenue\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"national\s+government\s+transfer[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+    ],
+    "total_expenditure": [
+        r"total\s+expenditure[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"total\s+spending\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+    ],
+    "recurrent_expenditure": [
+        r"recurrent\s+expenditure[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"operation(?:al)?\s+expenditure[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+    ],
+    "development_expenditure": [
+        r"development\s+expenditure[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"capital\s+expenditure[s]?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"capital\s+outlay\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+    ],
+    "pending_bills": [
+        r"pending\s+bills?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"outstanding\s+bills?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"accounts\s+payable\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+    ],
+    "staff_costs": [
+        r"staff\s+costs?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"personnel\s+(?:emoluments?|costs?)\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"wages?\s+and\s+salaries\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+    ],
+}
+
+AUDIT_PATTERNS: dict[str, list[str]] = {
+    "unqualified": [
+        r"unqualified\s+opinion",
+        r"clean\s+audit",
+        r"true\s+and\s+fair\s+view",
+        r"fairly\s+presents?\s+in\s+all\s+material\s+respects?",
+    ],
+    "disclaimer": [
+        r"disclaimer\s+of\s+opinion",
+        r"unable\s+to\s+express\s+an?\s+opinion",
+        r"do\s+not\s+express\s+an?\s+opinion",
+    ],
+    "adverse": [
+        r"adverse\s+opinion",
+        r"do\s+not\s+present\s+fairly",
+        r"materially\s+misstated",
+    ],
+    "qualified": [
+        r"qualified\s+opinion",
+        r"except\s+for\s+the\s+matters?\s+described",
+        r"subject\s+to\s+the\s+following",
+    ],
+}
+
+_RISK_KEYWORDS = (
+    "misstatement", "irregularity", "non-compliance", "unauthorized",
+    "unsupported", "lack of", "failure to", "not supported", "pending bills",
+    "irregular", "fraudulent", "wasteful", "unvouched", "unexplained",
+)
+
+
+def extract_metric(text: str, patterns: list[str]) -> tuple:
+    """Return (value_float, source_snippet) for the first matching pattern."""
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            value = _parse_amount(m.group(1))
+            if value:
+                return value, m.group(0)[:120]
+    return None, None
+
+
+def extract_audit_opinion(text: str) -> tuple:
+    """Return (opinion_type_str, [observation_strings])."""
+    if not text:
+        return None, []
+    tl = text.lower()
+    opinion = None
+    # Check in severity order so worst wins if multiple match
+    for otype in ("disclaimer", "adverse", "qualified", "unqualified"):
+        for pat in AUDIT_PATTERNS[otype]:
+            if re.search(pat, tl):
+                opinion = otype
+                break
+        if opinion:
+            break
+    observations = []
+    for sentence in re.split(r"[.!?]", text):
+        s = sentence.strip()
+        if len(s) > 40 and any(kw in s.lower() for kw in _RISK_KEYWORDS):
+            observations.append(s[:300])
+            if len(observations) >= 5:
+                break
+    return opinion, observations
 
 
 # ---------------------------------------------------------------------------
