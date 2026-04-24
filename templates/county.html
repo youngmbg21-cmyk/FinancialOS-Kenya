@@ -264,10 +264,14 @@ function loadAnalysis() {
     .then(r => r.json())
     .then(d => {
       const scoreColor = d.fiscal_health_score >= 70 ? '#00c896' : d.fiscal_health_score >= 50 ? '#f5a623' : '#ff4d6a';
+      // === AI ENHANCEMENT 1: show AI badge when Claude generated the analysis ===
+      const aiBadge = d.ai_generated
+        ? '<span class="badge badge-info" style="font-size:9px;margin-left:8px;vertical-align:middle;">Claude AI</span>'
+        : '<span class="badge badge-neutral" style="font-size:9px;margin-left:8px;vertical-align:middle;">Rule-based</span>';
       panel.innerHTML = `
         <div class="ai-score" style="--score-color:${scoreColor}">
           <span class="score-num">${d.fiscal_health_score}</span>
-          <span class="score-label">${d.health_label} · ${d.trend_assessment}</span>
+          <span class="score-label">${d.health_label} · ${d.trend_assessment}${aiBadge}</span>
         </div>
         <p class="ai-summary">${d.summary}</p>
         <div class="ai-sections">
