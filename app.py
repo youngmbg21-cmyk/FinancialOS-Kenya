@@ -662,6 +662,224 @@ def extract_audit_opinion(text: str) -> tuple:
 
 
 # ---------------------------------------------------------------------------
+# Background document processing task
+# ---------------------------------------------------------------------------
+
+def process_document_task(doc_id: int) -> None:
+    """Run after upload in a daemon thread: extract text, metrics, audit opinion."""
+    with app.app_context():
+        doc = Document.query.get(doc_id)
+        if not doc:
+            return
+        try:
+            doc.processing_status = "processing"
+            db.session.commit()
+
+            page_count, title, text = extract_pdf_metadata(doc.filepath)
+            doc.page_count = page_count
+            doc.detected_title = title
+            doc.text_content = text
+
+            if text:
+                # Auto-fill county if not set
+                if not doc.county_id:
+                    name = detect_county_from_text(text)
+                    if name:
+                        county = County.query.filter_by(name=name).first()
+                        if county:
+                            doc.county_id = county.id
+                            if not doc.county_name or doc.county_name == "All Counties":
+                                doc.county_name = name
+
+                # Auto-fill fiscal year if blank
+                if not doc.fiscal_year:
+                    doc.fiscal_year = detect_fiscal_year(text)
+
+                # Auto-fill source if still Other
+                if not doc.source or doc.source == "Other":
+                    detected = detect_source_from_text(text)
+                    if detected:
+                        doc.source = detected
+
+                db.session.flush()
+
+                # Extract fiscal metrics
+                if doc.county_id and doc.fiscal_year:
+                    for metric_name, patterns in METRIC_PATTERNS.items():
+                        value, snippet = extract_metric(text, patterns)
+                        if value:
+                            existing = FiscalMetric.query.filter_by(
+                                document_id=doc.id, metric_name=metric_name
+                            ).first()
+                            if existing:
+                                existing.metric_value = value
+                                existing.source_text = snippet
+                            else:
+                                db.session.add(FiscalMetric(
+                                    document_id=doc.id,
+                                    county_id=doc.county_id,
+                                    fiscal_year=doc.fiscal_year,
+                                    metric_name=metric_name,
+                                    metric_value=value,
+                                    source_text=snippet,
+                                    confidence_score=0.75,
+                                ))
+
+                    # Extract audit opinion for OAG documents
+                    if doc.source == "OAG":
+                        opinion_type, observations = extract_audit_opinion(text)
+                        if opinion_type and not AuditOpinion.query.filter_by(document_id=doc.id).first():
+                            db.session.add(AuditOpinion(
+                                document_id=doc.id,
+                                county_id=doc.county_id,
+                                fiscal_year=doc.fiscal_year,
+                                opinion_type=opinion_type,
+                                material_issues=len(observations),
+                                key_observations=json.dumps(observations),
+                            ))
+
+            doc.processing_status = "completed"
+            doc.processing_completed_at = datetime.utcnow()
+            db.session.commit()
+
+        except Exception as exc:
+            app.logger.error("Processing failed for doc %s: %s", doc_id, exc)
+            try:
+                doc.processing_status = "failed"
+                doc.processing_error = str(exc)
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Routes — auth
+# ---------------------------------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        remember = bool(request.form.get("remember"))
+        user = User.query.filter_by(username=username).first()
+        if user and user.is_active and user.check_password(password):
+            login_user(user, remember=remember)
+            user.last_login = datetime.utcnow()
+            db.session.commit()
+            return redirect(request.args.get("next") or url_for("dashboard"))
+        flash("Invalid username or password.", "error")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
+# Routes — dashboard
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+@login_required
+def index():
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    total_docs      = Document.query.count()
+    counties_covered = (db.session.query(Document.county_id)
+                        .filter(Document.county_id.isnot(None))
+                        .distinct().count())
+    years_tracked   = (db.session.query(Document.fiscal_year)
+                        .filter(Document.fiscal_year.isnot(None))
+                        .distinct().count())
+    completed_docs  = Document.query.filter_by(processing_status="completed").count()
+
+    latest_docs = (Document.query
+                   .order_by(Document.upload_date.desc())
+                   .limit(8).all())
+
+    counties_ranked = (db.session.query(County,
+                           db.func.count(Document.id).label("doc_count"))
+                       .outerjoin(Document)
+                       .group_by(County.id)
+                       .order_by(db.desc("doc_count"))
+                       .all())
+
+    opinion_rows = (db.session.query(AuditOpinion.opinion_type,
+                        db.func.count(AuditOpinion.id))
+                    .group_by(AuditOpinion.opinion_type).all())
+    opinion_counts = dict(opinion_rows)
+
+    fiscal_years = sorted(
+        {r[0] for r in db.session.query(Document.fiscal_year).all() if r[0]},
+        reverse=True,
+    )
+
+    return render_template("dashboard.html",
+        total_docs=total_docs,
+        counties_covered=counties_covered,
+        years_tracked=years_tracked,
+        completed_docs=completed_docs,
+        latest_docs=latest_docs,
+        counties_ranked=counties_ranked,
+        opinion_counts=opinion_counts,
+        fiscal_years=fiscal_years,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes — counties list
+# ---------------------------------------------------------------------------
+
+@app.route("/counties")
+@login_required
+def counties():
+    region_filter = request.args.get("region", "")
+    regions = sorted({r for _, _, r in KENYA_COUNTIES})
+
+    query = County.query
+    if region_filter:
+        query = query.filter_by(region=region_filter)
+    all_counties = query.order_by(County.code).all()
+
+    # Attach latest metric snapshot and audit opinion per county
+    county_data = []
+    for c in all_counties:
+        latest_metric = (FiscalMetric.query
+                         .filter_by(county_id=c.id, metric_name="total_revenue")
+                         .order_by(FiscalMetric.fiscal_year.desc())
+                         .first())
+        latest_audit = (AuditOpinion.query
+                        .filter_by(county_id=c.id)
+                        .order_by(AuditOpinion.fiscal_year.desc())
+                        .first())
+        doc_count = Document.query.filter_by(county_id=c.id).count()
+        county_data.append({
+            "county":       c,
+            "doc_count":    doc_count,
+            "latest_rev":   latest_metric.metric_value if latest_metric else None,
+            "latest_year":  latest_metric.fiscal_year  if latest_metric else None,
+            "audit":        latest_audit.opinion_type  if latest_audit  else None,
+            "audit_year":   latest_audit.fiscal_year   if latest_audit  else None,
+        })
+
+    return render_template("counties.html",
+        county_data=county_data,
+        regions=regions,
+        active_region=region_filter,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
