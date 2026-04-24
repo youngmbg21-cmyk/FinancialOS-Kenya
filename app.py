@@ -880,6 +880,281 @@ def counties():
 
 
 # ---------------------------------------------------------------------------
+# Routes — county detail
+# ---------------------------------------------------------------------------
+
+@app.route("/county/<int:county_id>")
+@login_required
+def county_detail(county_id):
+    county = County.query.get_or_404(county_id)
+
+    documents = (Document.query
+                 .filter_by(county_id=county_id)
+                 .order_by(Document.fiscal_year.desc(), Document.upload_date.desc())
+                 .all())
+
+    metrics = (FiscalMetric.query
+               .filter_by(county_id=county_id)
+               .order_by(FiscalMetric.fiscal_year)
+               .all())
+
+    audit_opinions = (AuditOpinion.query
+                      .filter_by(county_id=county_id)
+                      .order_by(AuditOpinion.fiscal_year.desc())
+                      .all())
+
+    # Build year-keyed metric dict for templates and chart data
+    metrics_by_year: dict = {}
+    for m in metrics:
+        metrics_by_year.setdefault(m.fiscal_year, {})[m.metric_name] = m.metric_value
+
+    sorted_years = sorted(metrics_by_year)
+
+    def _series(key):
+        return [metrics_by_year.get(y, {}).get(key) for y in sorted_years]
+
+    chart_data = {
+        "years":                sorted_years,
+        "total_revenue":        _series("total_revenue"),
+        "total_expenditure":    _series("total_expenditure"),
+        "own_source_revenue":   _series("own_source_revenue"),
+        "development_expenditure": _series("development_expenditure"),
+        "recurrent_expenditure":   _series("recurrent_expenditure"),
+    }
+
+    # Latest-year snapshot for KPI cards
+    latest_year = sorted_years[-1] if sorted_years else None
+    latest = metrics_by_year.get(latest_year, {})
+
+    latest_audit = audit_opinions[0] if audit_opinions else None
+
+    return render_template("county.html",
+        county=county,
+        documents=documents,
+        metrics=metrics,
+        audit_opinions=audit_opinions,
+        metrics_by_year=metrics_by_year,
+        chart_data=json.dumps(chart_data),
+        latest=latest,
+        latest_year=latest_year,
+        latest_audit=latest_audit,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes — document library
+# ---------------------------------------------------------------------------
+
+@app.route("/library")
+@login_required
+def library():
+    # Filter params
+    county_id   = request.args.get("county_id",   "", type=str)
+    source      = request.args.get("source",       "")
+    fiscal_year = request.args.get("fiscal_year",  "")
+    status      = request.args.get("status",       "")
+    search      = request.args.get("search",       "").strip()
+    page        = request.args.get("page", 1, type=int)
+
+    query = Document.query
+    if county_id:
+        query = query.filter_by(county_id=int(county_id))
+    if source:
+        query = query.filter_by(source=source)
+    if fiscal_year:
+        query = query.filter_by(fiscal_year=fiscal_year)
+    if status:
+        query = query.filter_by(processing_status=status)
+    if search:
+        query = query.filter(db.or_(
+            Document.original_filename.ilike(f"%{search}%"),
+            Document.county_name.ilike(f"%{search}%"),
+            Document.document_type.ilike(f"%{search}%"),
+        ))
+
+    pagination = query.order_by(Document.upload_date.desc()).paginate(
+        page=page, per_page=25, error_out=False
+    )
+
+    all_counties  = County.query.order_by(County.name).all()
+    fiscal_years  = sorted(
+        {r[0] for r in db.session.query(Document.fiscal_year).all() if r[0]},
+        reverse=True,
+    )
+
+    return render_template("library.html",
+        pagination=pagination,
+        documents=pagination.items,
+        all_counties=all_counties,
+        fiscal_years=fiscal_years,
+        sources=SOURCES,
+        filters=dict(county_id=county_id, source=source,
+                     fiscal_year=fiscal_year, status=status, search=search),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes — county comparison
+# ---------------------------------------------------------------------------
+
+@app.route("/compare")
+@login_required
+def compare():
+    all_counties = County.query.order_by(County.name).all()
+    fiscal_years = sorted(
+        {r[0] for r in db.session.query(Document.fiscal_year).all() if r[0]},
+        reverse=True,
+    )
+    return render_template("compare.html",
+        all_counties=all_counties,
+        fiscal_years=fiscal_years,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes — document detail & download
+# ---------------------------------------------------------------------------
+
+@app.route("/document/<int:doc_id>")
+@login_required
+def document_detail(doc_id):
+    doc           = Document.query.get_or_404(doc_id)
+    metrics       = FiscalMetric.query.filter_by(document_id=doc_id).all()
+    audit_opinions = AuditOpinion.query.filter_by(document_id=doc_id).all()
+    return render_template("document.html",
+        doc=doc,
+        metrics=metrics,
+        audit_opinions=audit_opinions,
+    )
+
+
+@app.route("/document/<int:doc_id>/download")
+@login_required
+def document_download(doc_id):
+    doc = Document.query.get_or_404(doc_id)
+    if not doc.filepath or not os.path.exists(doc.filepath):
+        flash("File not found on disk.", "error")
+        return redirect(url_for("document_detail", doc_id=doc_id))
+    return send_file(
+        doc.filepath,
+        as_attachment=True,
+        download_name=doc.original_filename,
+        mimetype="application/pdf",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes — admin upload portal
+# ---------------------------------------------------------------------------
+
+@app.route("/admin/upload", methods=["GET", "POST"])
+@login_required
+@admin_required
+def admin_upload():
+    if request.method == "POST":
+        files       = request.files.getlist("files")
+        source      = request.form.get("source",       "Other")
+        fiscal_year = request.form.get("fiscal_year",  "")
+        county_name = request.form.get("county_name",  "All Counties")
+        period      = request.form.get("report_period","annual")
+        doc_type    = request.form.get("document_type","")
+        notes       = request.form.get("notes",        "")
+
+        county_id = None
+        if county_name and county_name != "All Counties":
+            c = County.query.filter_by(name=county_name).first()
+            if c:
+                county_id = c.id
+
+        saved = 0
+        for f in files:
+            if not f or not f.filename or not allowed_file(f.filename):
+                continue
+            orig      = secure_filename(f.filename)
+            stored    = f"{uuid.uuid4().hex}_{orig}"
+            filepath  = os.path.join(app.config["UPLOAD_FOLDER"], stored)
+            f.save(filepath)
+
+            doc = Document(
+                original_filename=orig,
+                stored_filename=stored,
+                filepath=filepath,
+                file_size=os.path.getsize(filepath),
+                source=source,
+                fiscal_year=fiscal_year or None,
+                county_id=county_id,
+                county_name=county_name,
+                report_period=period,
+                document_type=doc_type,
+                notes=notes,
+                uploaded_by_id=current_user.id,
+                processing_status="pending",
+            )
+            db.session.add(doc)
+            db.session.flush()         # populate doc.id before thread starts
+
+            t = threading.Thread(target=process_document_task, args=(doc.id,), daemon=True)
+            t.start()
+            saved += 1
+
+        db.session.commit()
+        if saved:
+            flash(f"{saved} file(s) uploaded. Processing in background.", "success")
+        else:
+            flash("No valid PDF files found.", "error")
+        return redirect(url_for("admin_upload"))
+
+    recent = Document.query.order_by(Document.upload_date.desc()).limit(12).all()
+    return render_template("upload.html",
+        all_counties=County.query.order_by(County.name).all(),
+        fiscal_years=FISCAL_YEARS,
+        sources=SOURCES,
+        report_periods=REPORT_PERIODS,
+        document_types=DOCUMENT_TYPES,
+        recent=recent,
+    )
+
+
+@app.route("/admin/delete/<int:doc_id>", methods=["POST"])
+@login_required
+@admin_required
+def admin_delete(doc_id):
+    doc = Document.query.get_or_404(doc_id)
+    if doc.filepath and os.path.exists(doc.filepath):
+        os.remove(doc.filepath)
+    FiscalMetric.query.filter_by(document_id=doc_id).delete()
+    AuditOpinion.query.filter_by(document_id=doc_id).delete()
+    db.session.delete(doc)
+    db.session.commit()
+    flash("Document deleted.", "success")
+    return redirect(url_for("library"))
+
+
+@app.route("/admin/reprocess/<int:doc_id>", methods=["POST"])
+@login_required
+@admin_required
+def admin_reprocess(doc_id):
+    doc = Document.query.get_or_404(doc_id)
+    FiscalMetric.query.filter_by(document_id=doc_id).delete()
+    AuditOpinion.query.filter_by(document_id=doc_id).delete()
+    doc.processing_status = "pending"
+    doc.text_content = None
+    db.session.commit()
+    t = threading.Thread(target=process_document_task, args=(doc_id,), daemon=True)
+    t.start()
+    return jsonify({"status": "ok", "message": "Reprocessing started"})
+
+
+# ---------------------------------------------------------------------------
+# Routes — health check
+# ---------------------------------------------------------------------------
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "pdf_engine": PDF_AVAILABLE, "ai_engine": AI_AVAILABLE})
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
