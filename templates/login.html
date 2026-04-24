@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In — FinancialOS Kenya</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body class="login-body">
+
+<div class="login-wrap">
+
+  <div class="login-brand">
+    <div class="login-logo-mark">FOS</div>
+    <h1 class="login-title">FinancialOS <span>Kenya</span></h1>
+    <p class="login-subtitle">County Fiscal Intelligence Platform</p>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+    <div class="flash flash-{{ category }}" style="margin-bottom:1rem;">
+      {{ message }}
+    </div>
+    {% endfor %}
+  {% endif %}
+  {% endwith %}
+
+  <form class="login-form" method="POST" action="{{ url_for('login') }}">
+    <div class="form-group">
+      <label class="form-label">Username</label>
+      <input class="form-input" type="text" name="username"
+             placeholder="Enter username" required autofocus
+             value="{{ request.form.get('username', '') }}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Password</label>
+      <input class="form-input" type="password" name="password"
+             placeholder="Enter password" required>
+    </div>
+    <div class="form-check">
+      <input type="checkbox" id="remember" name="remember">
+      <label for="remember">Keep me signed in</label>
+    </div>
+    <button class="btn btn-primary btn-full" type="submit">Sign In</button>
+  </form>
+
+  <p class="login-hint">
+    Demo accounts: <code>admin</code> · <code>analyst</code> · <code>viewer</code><br>
+    Password: same as username + <code>123</code>
+  </p>
+
+  <p class="login-footer">
+    FinancialOS Kenya &copy; {{ now.year if now is defined else 2025 }} ·
+    Fiscal intelligence for banks, DFIs &amp; investors
+  </p>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
