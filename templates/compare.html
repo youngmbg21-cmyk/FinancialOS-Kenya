@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}Compare Counties{% endblock %}
+{% block breadcrumb %}<span>Compare Counties</span>{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Compare Counties</h1>
+    <p class="page-sub">Side-by-side fiscal metrics for up to 4 counties</p>
+  </div>
+</div>
+
+<!-- Selectors -->
+<div class="card compare-controls">
+  <div class="compare-selectors">
+    {% for i in range(4) %}
+    <div class="form-group">
+      <label class="form-label">County {{ i+1 }}</label>
+      <select class="form-input county-pick" id="pick{{ i }}">
+        <option value="">— Select county —</option>
+        {% for c in all_counties %}
+        <option value="{{ c.id }}">{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="compare-row-2">
+    <div class="form-group" style="max-width:200px;">
+      <label class="form-label">Fiscal Year</label>
+      <select class="form-input" id="compareFY">
+        <option value="">Latest available</option>
+        {% for fy in fiscal_years %}
+        <option value="{{ fy }}">{{ fy }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn btn-primary" onclick="runCompare()">Compare</button>
+  </div>
+</div>
+
+<!-- Results -->
+<div id="compareResults" style="display:none; margin-top:1.5rem;">
+  <!-- Summary table -->
+  <div class="card">
+    <div class="card-head"><h2 class="card-title">Metrics Comparison</h2></div>
+    <div class="table-wrap">
+      <table class="data-table" id="compareTable">
+        <thead id="compareThead"></thead>
+        <tbody id="compareTbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Revenue chart -->
+  <div class="dash-grid" style="margin-top:1.5rem;">
+    <div class="card card-wide">
+      <div class="card-head"><h2 class="card-title">Revenue Comparison</h2></div>
+      <div class="chart-container" style="height:280px;">
+        <canvas id="compareRevChart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2 class="card-title">Development vs Recurrent</h2></div>
+      <div class="chart-container" style="height:280px;">
+        <canvas id="compareDevChart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="compareEmpty" class="empty-state-lg">
+  Select at least 2 counties and click Compare.
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let revChart = null, devChart = null;
+const COLORS = ['#4f8ef7','#00c896','#f5a623','#ff4d6a'];
+const METRIC_LABELS = {
+  total_revenue:'Total Revenue', own_source_revenue:'Own-Source Revenue',
+  equitable_share:'Equitable Share', total_expenditure:'Total Expenditure',
+  recurrent_expenditure:'Recurrent Expenditure',
+  development_expenditure:'Development Expenditure',
+  pending_bills:'Pending Bills', staff_costs:'Staff Costs',
+};
+
+function fmtM(v) {
+  if (!v && v !== 0) return '—';
+  return v >= 1000 ? `KES ${(v/1000).toFixed(1)}B` : `KES ${v.toFixed(0)}M`;
+}
+
+function runCompare() {
+  const ids = [...document.querySelectorAll('.county-pick')]
+    .map(s => s.value).filter(Boolean);
+  if (ids.length < 2) { alert('Select at least 2 counties.'); return; }
+  const fy = document.getElementById('compareFY').value;
+  const qs = `counties=${ids.join(',')}&fiscal_year=${fy}`;
+
+  fetch(`/api/compare?${qs}`)
+    .then(r => r.json())
+    .then(data => {
+      if (!data.length) return;
+      document.getElementById('compareEmpty').style.display = 'none';
+      document.getElementById('compareResults').style.display = 'block';
+      renderTable(data);
+      renderCharts(data);
+    });
+}
+
+function renderTable(data) {
+  const thead = document.getElementById('compareThead');
+  const tbody = document.getElementById('compareTbody');
+  const auditLabels = {unqualified:'Clean',qualified:'Qualified',adverse:'Adverse',disclaimer:'Disclaimer'};
+  const auditClass  = {unqualified:'badge-success',qualified:'badge-warning',adverse:'badge-danger',disclaimer:'badge-critical'};
+
+  thead.innerHTML = `<tr><th>Metric</th>${data.map((c,i)=>`<th class="text-right" style="color:${COLORS[i]}">${c.county_name}</th>`).join('')}</tr>`;
+
+  const rows = Object.entries(METRIC_LABELS).map(([k,label]) =>
+    `<tr><td>${label}</td>${data.map(c=>`<td class="text-right mono">${fmtM(c.metrics[k])}</td>`).join('')}</tr>`
+  ).join('');
+
+  const auditRow = `<tr class="row-bold"><td>Latest Audit</td>${data.map(c=>{
+    const op = c.audit;
+    return `<td class="text-right">${op ? `<span class="badge ${auditClass[op]}">${auditLabels[op]}</span>` : '—'}</td>`;
+  }).join('')}</tr>`;
+
+  tbody.innerHTML = rows + auditRow;
+}
+
+function renderCharts(data) {
+  const labels = data.map(c => c.county_name);
+  if (revChart) revChart.destroy();
+  if (devChart) devChart.destroy();
+
+  const sharedOpts = {
+    responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{ labels:{ color:'#8b90a7', font:{size:11} } } },
+    scales:{
+      x:{ grid:{display:false}, ticks:{color:'#8b90a7'} },
+      y:{ grid:{color:'rgba(255,255,255,0.04)'}, ticks:{color:'#8b90a7',
+        callback: v => v>=1000 ? `${(v/1000).toFixed(1)}B` : `${v.toFixed(0)}M`} }
+    }
+  };
+
+  revChart = new Chart(document.getElementById('compareRevChart'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[
+        { label:'Total Revenue',     data:data.map(c=>c.metrics.total_revenue||0),     backgroundColor:COLORS, borderRadius:4 },
+        { label:'Own-Source Revenue',data:data.map(c=>c.metrics.own_source_revenue||0),backgroundColor:COLORS.map(c=>c+'88'), borderRadius:4 },
+      ]
+    },
+    options:{ ...sharedOpts, plugins:{...sharedOpts.plugins, legend:{labels:{color:'#8b90a7',font:{size:11}}}} }
+  });
+
+  devChart = new Chart(document.getElementById('compareDevChart'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[
+        { label:'Development', data:data.map(c=>c.metrics.development_expenditure||0), backgroundColor:'#00c896', borderRadius:4 },
+        { label:'Recurrent',   data:data.map(c=>c.metrics.recurrent_expenditure||0),   backgroundColor:'#f5a623', borderRadius:4 },
+      ]
+    },
+    options:sharedOpts
+  });
+}
+</script>
+{% endblock %}

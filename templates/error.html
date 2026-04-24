@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ code }} — FinancialOS Kenya</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body class="login-body">
+  <div class="login-wrap" style="text-align:center;">
+    <div class="login-logo-mark" style="background:var(--red-dim);color:var(--red);">{{ code }}</div>
+    <h1 class="login-title" style="margin-top:1.5rem;">{{ message }}</h1>
+    <p class="login-subtitle" style="margin-top:0.5rem;">
+      {% if code == 403 %}You don't have permission to access this page.
+      {% elif code == 404 %}The page or resource you requested doesn't exist.
+      {% else %}Something went wrong on our end. Please try again.
+      {% endif %}
+    </p>
+    <div style="margin-top:2rem; display:flex; gap:1rem; justify-content:center;">
+      <a href="{{ url_for('dashboard') }}" class="btn btn-primary">Go to Dashboard</a>
+      <a href="javascript:history.back()" class="btn btn-outline">Go Back</a>
+    </div>
+  </div>
+</body>
+</html>

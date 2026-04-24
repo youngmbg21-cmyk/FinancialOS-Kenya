@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Counties{% endblock %}
+{% block breadcrumb %}<span>Counties</span>{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">All 47 Counties</h1>
+    <p class="page-sub">Browse fiscal intelligence by county</p>
+  </div>
+  <div class="header-actions">
+    {% for region in regions %}
+    <a href="{{ url_for('counties', region=region) }}"
+       class="btn btn-sm {% if active_region == region %}btn-primary{% else %}btn-outline{% endif %}">
+      {{ region }}
+    </a>
+    {% endfor %}
+    {% if active_region %}
+    <a href="{{ url_for('counties') }}" class="btn btn-sm btn-ghost">Clear</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="county-grid">
+  {% for item in county_data %}
+  {% set c = item.county %}
+  <a href="{{ url_for('county_detail', county_id=c.id) }}" class="county-card">
+    <div class="county-card-head">
+      <div class="county-code">{{ '%02d' % c.code }}</div>
+      <span class="region-tag">{{ c.region }}</span>
+    </div>
+    <h3 class="county-card-name">{{ c.name }}</h3>
+    {% if item.latest_rev %}
+    <div class="county-card-metric">
+      <span class="metric-label">Revenue {{ item.latest_year }}</span>
+      <span class="metric-value">{{ item.latest_rev | fmt_millions }}</span>
+    </div>
+    {% else %}
+    <div class="county-card-metric empty">No fiscal data yet</div>
+    {% endif %}
+    <div class="county-card-footer">
+      <span class="doc-count-sm">{{ item.doc_count }} doc{{ 's' if item.doc_count != 1 }}</span>
+      {% if item.audit %}
+      <span class="badge {{ item.audit | opinion_class }}">{{ item.audit | opinion_label }}</span>
+      {% else %}
+      <span class="badge badge-neutral">No audit</span>
+      {% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}
