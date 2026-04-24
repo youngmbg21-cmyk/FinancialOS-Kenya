@@ -1146,6 +1146,319 @@ def admin_reprocess(doc_id):
 
 
 # ---------------------------------------------------------------------------
+# API — dashboard stats
+# ---------------------------------------------------------------------------
+
+@app.route("/api/dashboard/stats")
+@login_required
+def api_dashboard_stats():
+    total_docs = Document.query.count()
+    counties_covered = (db.session.query(Document.county_id)
+                        .filter(Document.county_id.isnot(None))
+                        .distinct().count())
+
+    status_counts = dict(
+        db.session.query(Document.processing_status,
+                         db.func.count(Document.id))
+        .group_by(Document.processing_status).all()
+    )
+    source_counts = dict(
+        db.session.query(Document.source, db.func.count(Document.id))
+        .filter(Document.source.isnot(None))
+        .group_by(Document.source).all()
+    )
+    year_counts = dict(
+        db.session.query(Document.fiscal_year, db.func.count(Document.id))
+        .filter(Document.fiscal_year.isnot(None))
+        .group_by(Document.fiscal_year).all()
+    )
+    opinion_counts = dict(
+        db.session.query(AuditOpinion.opinion_type, db.func.count(AuditOpinion.id))
+        .group_by(AuditOpinion.opinion_type).all()
+    )
+
+    return jsonify({
+        "total_docs":       total_docs,
+        "counties_covered": counties_covered,
+        "status":           status_counts,
+        "sources":          source_counts,
+        "years":            year_counts,
+        "opinions":         opinion_counts,
+    })
+
+
+# ---------------------------------------------------------------------------
+# API — counties list (with optional fiscal year filter)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/counties")
+@login_required
+def api_counties():
+    fiscal_year = request.args.get("fiscal_year", "")
+    counties = County.query.order_by(County.code).all()
+    result = []
+
+    for c in counties:
+        mq = FiscalMetric.query.filter_by(county_id=c.id)
+        if fiscal_year:
+            mq = mq.filter_by(fiscal_year=fiscal_year)
+        metrics = {m.metric_name: m.metric_value for m in mq.all()}
+
+        latest_audit = (AuditOpinion.query
+                        .filter_by(county_id=c.id)
+                        .order_by(AuditOpinion.fiscal_year.desc())
+                        .first())
+
+        result.append({
+            "id":          c.id,
+            "code":        c.code,
+            "name":        c.name,
+            "region":      c.region,
+            "doc_count":   Document.query.filter_by(county_id=c.id).count(),
+            "metrics":     metrics,
+            "audit":       latest_audit.opinion_type if latest_audit else None,
+            "audit_year":  latest_audit.fiscal_year  if latest_audit else None,
+        })
+
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# API — single county metrics (all years)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/county/<int:county_id>/metrics")
+@login_required
+def api_county_metrics(county_id):
+    metrics = (FiscalMetric.query
+               .filter_by(county_id=county_id)
+               .order_by(FiscalMetric.fiscal_year)
+               .all())
+
+    result: dict = {}
+    for m in metrics:
+        result.setdefault(m.fiscal_year, {})[m.metric_name] = {
+            "value":      m.metric_value,
+            "confidence": m.confidence_score,
+            "unit":       m.unit,
+        }
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# API — county AI analysis (rule-based; Claude upgrade in Batch 3)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/county/<int:county_id>/analysis")
+@login_required
+def api_county_analysis(county_id):
+    county = County.query.get_or_404(county_id)
+    metrics = FiscalMetric.query.filter_by(county_id=county_id).all()
+    opinions = AuditOpinion.query.filter_by(county_id=county_id).all()
+
+    score = 60
+    risks, audit_flags, rev_signals = [], [], []
+
+    for op in opinions[-3:]:
+        if op.opinion_type == "unqualified":
+            score += 8
+        elif op.opinion_type == "qualified":
+            score -= 5
+            audit_flags.append(f"Qualified opinion in {op.fiscal_year}")
+        elif op.opinion_type == "adverse":
+            score -= 18
+            audit_flags.append(f"Adverse opinion in {op.fiscal_year} — serious concerns")
+        elif op.opinion_type == "disclaimer":
+            score -= 28
+            audit_flags.append(f"Disclaimer of opinion in {op.fiscal_year} — critical issues")
+
+    by_year: dict = {}
+    for m in metrics:
+        by_year.setdefault(m.fiscal_year, {})[m.metric_name] = m.metric_value
+
+    for yr, ym in by_year.items():
+        rev   = ym.get("total_revenue",          0) or 0
+        osr   = ym.get("own_source_revenue",      0) or 0
+        exp   = ym.get("total_expenditure",       0) or 0
+        dev   = ym.get("development_expenditure", 0) or 0
+        bills = ym.get("pending_bills",           0) or 0
+
+        if rev > 0:
+            osr_ratio = osr / rev
+            if osr_ratio < 0.05:
+                score -= 5
+                rev_signals.append(f"Very low own-source revenue ({osr_ratio*100:.1f}%) in {yr}")
+            elif osr_ratio > 0.15:
+                score += 4
+                rev_signals.append(f"Strong own-source revenue ({osr_ratio*100:.1f}%) in {yr}")
+
+            if bills / rev > 0.10:
+                score -= 8
+                risks.append(f"Pending bills at {bills/rev*100:.0f}% of revenue in {yr}")
+
+        if exp > 0 and dev / exp < 0.20:
+            score -= 4
+            risks.append(f"Development spending below 20% in {yr}")
+
+    score = max(0, min(100, score))
+    label = ("Strong" if score >= 70 else
+             "Moderate" if score >= 50 else
+             "Weak" if score >= 30 else "Critical")
+    trend = "Improving" if score >= 65 else "Stable" if score >= 45 else "Deteriorating"
+
+    return jsonify({
+        "fiscal_health_score": score,
+        "health_label":        label,
+        "trend_assessment":    trend,
+        "top_risks":           risks[:4]       or ["Insufficient data for risk assessment"],
+        "revenue_signals":     rev_signals[:3] or ["Upload more CoB reports for revenue analysis"],
+        "audit_flags":         audit_flags[:3] or ["No OAG reports uploaded yet"],
+        "summary": (f"{county.name} County scores {score}/100 — {label} fiscal performance "
+                    f"based on {len(metrics)} extracted metrics across {len(by_year)} fiscal year(s)."),
+        "recommendations": [
+            "Upload all available CoB CBIRRs to improve data completeness",
+            "Monitor pending bills as a share of annual revenue",
+            "Compare development expenditure ratios against the 30% constitutional benchmark",
+        ],
+    })
+
+
+# ---------------------------------------------------------------------------
+# API — county comparison
+# ---------------------------------------------------------------------------
+
+@app.route("/api/compare")
+@login_required
+def api_compare():
+    ids_raw     = request.args.get("counties", "")
+    fiscal_year = request.args.get("fiscal_year", "")
+    result      = []
+
+    for raw in ids_raw.split(","):
+        try:
+            cid = int(raw.strip())
+        except ValueError:
+            continue
+        county = County.query.get(cid)
+        if not county:
+            continue
+
+        mq = FiscalMetric.query.filter_by(county_id=cid)
+        if fiscal_year:
+            mq = mq.filter_by(fiscal_year=fiscal_year)
+        metrics = {m.metric_name: m.metric_value for m in mq.all()}
+
+        latest_audit = (AuditOpinion.query
+                        .filter_by(county_id=cid)
+                        .order_by(AuditOpinion.fiscal_year.desc())
+                        .first())
+
+        result.append({
+            "county_id":   cid,
+            "county_name": county.name,
+            "region":      county.region,
+            "metrics":     metrics,
+            "audit":       latest_audit.opinion_type if latest_audit else None,
+        })
+
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# API — paginated document list
+# ---------------------------------------------------------------------------
+
+@app.route("/api/documents")
+@login_required
+def api_documents():
+    county_id   = request.args.get("county_id",  type=int)
+    source      = request.args.get("source",      "")
+    fiscal_year = request.args.get("fiscal_year", "")
+    status      = request.args.get("status",      "")
+    search      = request.args.get("search",      "").strip()
+    page        = request.args.get("page",    1,  type=int)
+    per_page    = request.args.get("per_page", 20, type=int)
+
+    q = Document.query
+    if county_id:  q = q.filter_by(county_id=county_id)
+    if source:     q = q.filter_by(source=source)
+    if fiscal_year: q = q.filter_by(fiscal_year=fiscal_year)
+    if status:     q = q.filter_by(processing_status=status)
+    if search:
+        q = q.filter(db.or_(
+            Document.original_filename.ilike(f"%{search}%"),
+            Document.county_name.ilike(f"%{search}%"),
+            Document.document_type.ilike(f"%{search}%"),
+        ))
+
+    pag = q.order_by(Document.upload_date.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    return jsonify({
+        "documents":    [d.to_dict() for d in pag.items],
+        "total":        pag.total,
+        "pages":        pag.pages,
+        "current_page": page,
+    })
+
+
+# ---------------------------------------------------------------------------
+# API — CSV export (analyst + admin only)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/export/csv")
+@login_required
+def api_export_csv():
+    if not current_user.can_export():
+        abort(403)
+
+    county_id   = request.args.get("county_id",  type=int)
+    fiscal_year = request.args.get("fiscal_year", "")
+
+    q = FiscalMetric.query.join(County)
+    if county_id:    q = q.filter(FiscalMetric.county_id == county_id)
+    if fiscal_year:  q = q.filter(FiscalMetric.fiscal_year == fiscal_year)
+
+    buf = io.StringIO()
+    w   = csv.writer(buf)
+    w.writerow(["County", "Fiscal Year", "Metric", "Value (KES Millions)", "Confidence"])
+    for m in q.order_by(County.name, FiscalMetric.fiscal_year).all():
+        w.writerow([
+            m.county.name if m.county else "",
+            m.fiscal_year,
+            m.metric_name,
+            round(m.metric_value, 2) if m.metric_value else "",
+            round(m.confidence_score, 2) if m.confidence_score else "",
+        ])
+
+    buf.seek(0)
+    filename = f"kenya_fiscal_{datetime.now().strftime('%Y%m%d')}.csv"
+    return send_file(
+        io.BytesIO(buf.getvalue().encode()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+# ---------------------------------------------------------------------------
+# API — document processing status (poll from upload page)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/document/<int:doc_id>/status")
+@login_required
+def api_doc_status(doc_id):
+    doc = Document.query.get_or_404(doc_id)
+    return jsonify({
+        "id":     doc.id,
+        "status": doc.processing_status,
+        "error":  doc.processing_error,
+        "pages":  doc.page_count,
+        "title":  doc.detected_title,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Routes — health check
 # ---------------------------------------------------------------------------
 
