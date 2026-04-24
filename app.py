@@ -1610,6 +1610,67 @@ def api_chat():
 
 
 # ---------------------------------------------------------------------------
+# Routes — Document Review (3-panel: doc list | PDF viewer | chat)
+# ---------------------------------------------------------------------------
+
+@app.route("/review")
+@login_required
+def review():
+    counties  = County.query.order_by(County.name).all()
+    documents = (Document.query
+                 .filter_by(processing_status="completed")
+                 .order_by(Document.upload_date.desc())
+                 .all())
+    return render_template("review.html", counties=counties, documents=documents)
+
+
+@app.route("/api/document/<int:doc_id>/file")
+@login_required
+def api_doc_file(doc_id):
+    """Serve the raw PDF bytes for PDF.js to render in the browser."""
+    doc = Document.query.get_or_404(doc_id)
+    if not doc.filepath or not os.path.exists(doc.filepath):
+        abort(404)
+    return send_file(
+        doc.filepath,
+        mimetype="application/pdf",
+        as_attachment=False,
+        download_name=doc.original_filename,
+    )
+
+
+@app.route("/api/review/documents")
+@login_required
+def api_review_documents():
+    """Return document list with metadata for the review panel selector."""
+    county_id = request.args.get("county_id", type=int)
+    q         = request.args.get("q", "").strip().lower()
+
+    docs = Document.query.filter_by(processing_status="completed")
+    if county_id:
+        docs = docs.filter_by(county_id=county_id)
+    docs = docs.order_by(Document.upload_date.desc()).all()
+
+    results = []
+    for d in docs:
+        title = d.detected_title or d.original_filename
+        if q and q not in title.lower() and q not in (d.original_filename or "").lower():
+            continue
+        results.append({
+            "id":            d.id,
+            "title":         title,
+            "filename":      d.original_filename,
+            "county_id":     d.county_id,
+            "county_name":   d.county.name if d.county else "Unknown",
+            "fiscal_year":   d.fiscal_year,
+            "source":        d.source_type,
+            "pages":         d.page_count,
+            "upload_date":   d.upload_date.strftime("%d %b %Y") if d.upload_date else "",
+        })
+    return jsonify(results)
+
+
+# ---------------------------------------------------------------------------
 # Routes — health check
 # ---------------------------------------------------------------------------
 

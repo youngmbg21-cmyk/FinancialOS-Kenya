@@ -42,6 +42,11 @@
       <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/><path d="M16 6l-1.41 1.41L19.17 12l-4.58 4.59L16 18l6-6zM1 6L2.41 7.41 7 12l-4.59 4.59L1 18l6-6z" transform="scale(-1,1) translate(-8,0)"/></svg>
       Compare Counties
     </a>
+    <a href="{{ url_for('review') }}"
+       class="nav-item {% if request.endpoint == 'review' %}active{% endif %}">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zm-4 8H7v-2h2v2zm6 0h-4v-2h4v2zm0-4H7v-2h8v2z"/></svg>
+      Document Review
+    </a>
 
     {% if current_user.is_authenticated and current_user.can_upload() %}
     <div class="nav-divider"></div>
