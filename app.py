@@ -1459,6 +1459,157 @@ def api_doc_status(doc_id):
 
 
 # ---------------------------------------------------------------------------
+# API — AI Chatbot  (/api/chat)
+# ---------------------------------------------------------------------------
+
+def _build_county_context(county_id) -> str:
+    if not county_id:
+        return ""
+    county = County.query.get(county_id)
+    if not county:
+        return ""
+    metrics  = (FiscalMetric.query.filter_by(county_id=county_id)
+                .order_by(FiscalMetric.fiscal_year.desc()).all())
+    opinions = (AuditOpinion.query.filter_by(county_id=county_id)
+                .order_by(AuditOpinion.fiscal_year.desc()).all())
+    doc_count = Document.query.filter_by(county_id=county_id).count()
+
+    by_year: dict = {}
+    for m in metrics:
+        by_year.setdefault(m.fiscal_year, {})[m.metric_name] = m.metric_value
+
+    lines = [
+        f"ACTIVE COUNTY: {county.name} (Code {county.code:02d}, {county.region} Region)",
+        f"Population: {county.population:,}" if county.population else "",
+        f"Documents uploaded: {doc_count}", "",
+    ]
+    for yr in sorted(by_year, reverse=True)[:4]:
+        ym = by_year[yr]
+        lines.append(f"Fiscal Year {yr}:")
+        for k, label in [
+            ("total_revenue",           "  Total Revenue"),
+            ("own_source_revenue",      "  Own-Source Revenue"),
+            ("equitable_share",         "  Equitable Share"),
+            ("total_expenditure",       "  Total Expenditure"),
+            ("recurrent_expenditure",   "  Recurrent Expenditure"),
+            ("development_expenditure", "  Development Expenditure"),
+            ("pending_bills",           "  Pending Bills"),
+            ("staff_costs",             "  Staff Costs"),
+        ]:
+            if k in ym:
+                v = ym[k]
+                lines.append(f"{label}: {'KES ' + str(round(v/1000,1)) + 'B' if v >= 1000 else 'KES ' + str(round(v,0)) + 'M'}")
+    if opinions:
+        lines += ["", "Audit History:"]
+        for op in opinions[:4]:
+            obs = op.observations_list()
+            lines.append(f"  {op.fiscal_year}: {op.opinion_type.upper()} "
+                         f"({op.material_issues} issues)"
+                         f"{' — ' + obs[0][:80] if obs else ''}")
+    return "\n".join(l for l in lines if l is not None)
+
+
+def _build_dashboard_context() -> str:
+    total_docs = Document.query.count()
+    completed  = Document.query.filter_by(processing_status="completed").count()
+    covered    = (db.session.query(Document.county_id)
+                  .filter(Document.county_id.isnot(None)).distinct().count())
+    op_counts  = dict(
+        db.session.query(AuditOpinion.opinion_type, db.func.count(AuditOpinion.id))
+        .group_by(AuditOpinion.opinion_type).all())
+    top5 = (db.session.query(County.name,
+                db.func.max(FiscalMetric.metric_value).label("rev"))
+            .join(FiscalMetric, FiscalMetric.county_id == County.id)
+            .filter(FiscalMetric.metric_name == "total_revenue")
+            .group_by(County.id).order_by(db.desc("rev")).limit(5).all())
+    lines = [
+        "PLATFORM OVERVIEW:",
+        f"Total documents: {total_docs} ({completed} processed)",
+        f"Counties with data: {covered}/47",
+        f"Audit opinions — Clean: {op_counts.get('unqualified',0)}, "
+        f"Qualified: {op_counts.get('qualified',0)}, "
+        f"Adverse: {op_counts.get('adverse',0)}, "
+        f"Disclaimer: {op_counts.get('disclaimer',0)}", "",
+        "Top 5 counties by revenue:",
+    ]
+    for name, rev in top5:
+        fmt = f"KES {rev/1000:.1f}B" if rev and rev >= 1000 else f"KES {rev:.0f}M" if rev else "—"
+        lines.append(f"  {name}: {fmt}")
+    return "\n".join(lines)
+
+
+def _build_system_prompt(page: str, county_id, mode: str) -> str:
+    county_ctx    = _build_county_context(county_id)
+    dashboard_ctx = _build_dashboard_context()
+    prompt = f"""You are FiscalOS AI — the built-in fiscal intelligence assistant for FinancialOS Kenya, \
+a platform used by banks, DFIs, investors, and analysts to analyse Kenyan county government finances.
+
+You have three roles:
+ROLE 1 — APP GUIDE: Explain every feature of FinancialOS Kenya. Tell users exactly where to click.
+ROLE 2 — FISCAL ANALYST: Analyse the real county data in the platform. Reference specific KES figures, \
+audit opinions, and trends. Think like a credit analyst or DFI investment officer.
+ROLE 3 — KENYA EXPERT: Explain Kenya fiscal context — equitable share, Controller of Budget, OAG, \
+IFMIS, CRA, the 30% development expenditure constitutional requirement, pending bills, own-source revenue.
+
+CURRENT PAGE: {page}
+USER ROLE: {getattr(current_user, 'role', 'viewer')}
+
+{dashboard_ctx}
+
+{county_ctx}
+
+CHART DIRECTIVES — embed one per response on its own line when a visual would help:
+[[CHART:revenue_trend]]         — revenue vs expenditure trend for the active county
+[[CHART:osr_trend]]             — own-source revenue ratio trend for the active county
+[[CHART:expenditure_breakdown]] — stacked recurrent vs development bar
+[[CHART:audit_history]]         — audit opinion history for the active county
+[[CHART:county_comparison]]     — top 10 counties by total revenue
+[[CHART:pending_bills]]         — pending bills as % of revenue across counties
+
+Rules: only use when county data is loaded · place on its own line · max one per response · \
+after the directive highlight 2-3 specific insights · use county_comparison or pending_bills \
+for platform-wide questions."""
+
+    if mode == "simple":
+        prompt += "\n\nSIMPLE MODE: Plain English. No jargon. Short sentences. End with 'Bottom line: [one sentence]'."
+    else:
+        prompt += "\n\nEXPERT MODE: User is analyst/DFI level. Precise fiscal terminology. Concise and data-driven."
+    prompt += "\n\nAlways reference specific numbers. Never say 'I don't have access to' — you have full context."
+    return prompt
+
+
+@app.route("/api/chat", methods=["POST"])
+@login_required
+def api_chat():
+    if not AI_AVAILABLE:
+        return jsonify({"error": "AI engine not installed. Run: pip install anthropic"}), 503
+    if not app.config["ANTHROPIC_API_KEY"]:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured. Set it as an environment variable."}), 503
+
+    body      = request.get_json(force=True)
+    messages  = body.get("messages", [])
+    page      = body.get("page", "Dashboard")
+    county_id = body.get("county_id")
+    mode      = body.get("mode", "simple")
+
+    if not messages:
+        return jsonify({"error": "No messages provided."}), 400
+
+    try:
+        client   = anthropic.Anthropic(api_key=app.config["ANTHROPIC_API_KEY"])
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1200,
+            system=_build_system_prompt(page, county_id, mode),
+            messages=[{"role": m["role"], "content": m["content"]} for m in messages[-20:]],
+        )
+        return jsonify({"reply": response.content[0].text})
+    except Exception as exc:
+        app.logger.error("Chat API error: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Routes — health check
 # ---------------------------------------------------------------------------
 
