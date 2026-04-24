@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block title %}{{ county.name }}{% endblock %}
+{% block breadcrumb %}
+  <a href="{{ url_for('counties') }}">Counties</a>
+  <span class="bc-sep">›</span>
+  <span>{{ county.name }}</span>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">{{ county.name }} County</h1>
+    <p class="page-sub">
+      <span class="region-tag">{{ county.region }}</span>
+      {% if county.population %}· Population {{ county.population | fmt_number }}{% endif %}
+      · County Code {{ '%02d' % county.code }}
+    </p>
+  </div>
+  <div class="header-actions">
+    <a href="{{ url_for('compare') }}?c={{ county.id }}" class="btn btn-outline btn-sm">Compare</a>
+    {% if current_user.can_export() %}
+    <a href="/api/export/csv?county_id={{ county.id }}" class="btn btn-outline btn-sm">Export CSV</a>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── KPI cards ──────────────────────────────────────────────────── -->
+<div class="kpi-grid kpi-grid-3">
+  <div class="kpi-card">
+    <div class="kpi-icon kpi-blue">
+      <svg viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
+    </div>
+    <div class="kpi-body">
+      <span class="kpi-value">{{ latest.get('total_revenue') | fmt_millions }}</span>
+      <span class="kpi-label">Total Revenue {{ latest_year or '' }}</span>
+    </div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-icon kpi-purple">
+      <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+    </div>
+    <div class="kpi-body">
+      <span class="kpi-value">
+        {% if latest.get('total_revenue') and latest.get('own_source_revenue') %}
+          {{ ((latest.get('own_source_revenue') / latest.get('total_revenue')) * 100) | int }}<span class="kpi-unit">%</span>
+        {% else %}—{% endif %}
+      </span>
+      <span class="kpi-label">Own-Source Revenue Ratio</span>
+    </div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-icon {% if latest_audit %}{{ latest_audit.opinion_type | opinion_class | replace('badge-','kpi-') }}{% else %}kpi-neutral{% endif %}">
+      <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+    </div>
+    <div class="kpi-body">
+      <span class="kpi-value">
+        {% if latest_audit %}
+          <span class="badge {{ latest_audit.opinion_type | opinion_class }}">
+            {{ latest_audit.opinion_type | opinion_label }}
+          </span>
+        {% else %}—{% endif %}
+      </span>
+      <span class="kpi-label">Latest Audit Opinion</span>
+    </div>
+  </div>
+</div>
+
+<!-- ── Charts ─────────────────────────────────────────────────────── -->
+<div class="dash-grid">
+  <div class="card card-wide">
+    <div class="card-head">
+      <h2 class="card-title">Revenue vs Expenditure Trend</h2>
+    </div>
+    <div class="chart-container" style="height:260px;">
+      <canvas id="revExpChart"></canvas>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h2 class="card-title">Expenditure Breakdown</h2>
+    </div>
+    <div class="chart-container" style="height:260px;">
+      <canvas id="expBreakChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- ── Metrics table ──────────────────────────────────────────────── -->
+<div class="card" style="margin-top:1.5rem;">
+  <div class="card-head">
+    <h2 class="card-title">Extracted Fiscal Metrics</h2>
+    <span class="card-meta">KES Millions · auto-extracted from uploaded PDFs</span>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          {% for yr in metrics_by_year.keys() | sort %}
+          <th class="text-right">{{ yr }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% set metric_labels = {
+          'total_revenue': 'Total Revenue',
+          'own_source_revenue': 'Own-Source Revenue',
+          'equitable_share': 'Equitable Share',
+          'total_expenditure': 'Total Expenditure',
+          'recurrent_expenditure': 'Recurrent Expenditure',
+          'development_expenditure': 'Development Expenditure',
+          'pending_bills': 'Pending Bills',
+          'staff_costs': 'Staff Costs'
+        } %}
+        {% for key, label in metric_labels.items() %}
+        <tr {% if key in ('total_revenue','total_expenditure') %}class="row-bold"{% endif %}>
+          <td>{{ label }}</td>
+          {% for yr in metrics_by_year.keys() | sort %}
+          <td class="text-right mono">
+            {{ metrics_by_year[yr].get(key) | fmt_millions if metrics_by_year[yr].get(key) else '—' }}
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Audit history ──────────────────────────────────────────────── -->
+{% if audit_opinions %}
+<div class="card" style="margin-top:1.5rem;">
+  <div class="card-head">
+    <h2 class="card-title">Audit History</h2>
+  </div>
+  {% for op in audit_opinions %}
+  <div class="audit-row">
+    <div class="audit-year">{{ op.fiscal_year }}</div>
+    <span class="badge {{ op.opinion_type | opinion_class }}">{{ op.opinion_type | opinion_label }}</span>
+    <span class="audit-issues">{{ op.material_issues }} issue{{ 's' if op.material_issues != 1 }}</span>
+    <div class="audit-observations">
+      {% for obs in op.observations_list() %}
+      <p class="obs-item">{{ obs }}</p>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ── Documents ──────────────────────────────────────────────────── -->
+<div class="card" style="margin-top:1.5rem;">
+  <div class="card-head">
+    <h2 class="card-title">Uploaded Documents</h2>
+    <span class="card-meta">{{ documents | length }} file{{ 's' if documents | length != 1 }}</span>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Filename</th>
+          <th>Source</th>
+          <th>Fiscal Year</th>
+          <th>Period</th>
+          <th>Pages</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for doc in documents %}
+        <tr>
+          <td><a href="{{ url_for('document_detail', doc_id=doc.id) }}">{{ doc.original_filename | truncate(45) }}</a></td>
+          <td><span class="src-badge src-{{ doc.source | lower }}">{{ doc.source }}</span></td>
+          <td>{{ doc.fiscal_year or '—' }}</td>
+          <td>{{ doc.report_period or '—' }}</td>
+          <td class="mono">{{ doc.page_count or '—' }}</td>
+          <td><span class="status-pill {{ doc.processing_status | status_class }}">{{ doc.processing_status | title }}</span></td>
+          <td class="actions-cell">
+            <a href="{{ url_for('document_detail', doc_id=doc.id) }}" class="tbl-action">View</a>
+            {% if doc.filepath %}
+            <a href="{{ url_for('document_download', doc_id=doc.id) }}" class="tbl-action">Download</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="empty-cell">No documents uploaded for this county yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── AI panel ───────────────────────────────────────────────────── -->
+<div class="card ai-card" style="margin-top:1.5rem;">
+  <div class="card-head">
+    <h2 class="card-title">Fiscal Intelligence Analysis</h2>
+    <button class="btn btn-sm btn-primary" onclick="loadAnalysis()">Generate Analysis</button>
+  </div>
+  <div id="aiPanel" class="ai-panel">
+    <p class="ai-placeholder">Click "Generate Analysis" to run the fiscal intelligence engine for {{ county.name }}.</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const chartData = {{ chart_data | safe }};
+
+// Revenue vs Expenditure line chart
+const revExpCtx = document.getElementById('revExpChart');
+if (revExpCtx && chartData.years.length) {
+  new Chart(revExpCtx, {
+    type: 'line',
+    data: {
+      labels: chartData.years,
+      datasets: [
+        { label: 'Total Revenue',     data: chartData.total_revenue,     borderColor: '#4f8ef7', backgroundColor: 'rgba(79,142,247,0.08)', tension: 0.3, fill: true },
+        { label: 'Total Expenditure', data: chartData.total_expenditure, borderColor: '#ff4d6a', backgroundColor: 'rgba(255,77,106,0.06)', tension: 0.3, fill: false },
+        { label: 'Own-Source Revenue',data: chartData.own_source_revenue,borderColor: '#00c896', backgroundColor: 'transparent',           tension: 0.3, fill: false, borderDash: [4,3] },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8b90a7', font: { size: 11 } } } },
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#8b90a7' } },
+        y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#8b90a7',
+          callback: v => v >= 1000 ? `${(v/1000).toFixed(1)}B` : `${v.toFixed(0)}M` } }
+      }
+    }
+  });
+}
+
+// Expenditure breakdown stacked bar
+const expCtx = document.getElementById('expBreakChart');
+if (expCtx && chartData.years.length) {
+  new Chart(expCtx, {
+    type: 'bar',
+    data: {
+      labels: chartData.years,
+      datasets: [
+        { label: 'Recurrent',    data: chartData.recurrent_expenditure,   backgroundColor: '#f5a623', borderRadius: 3 },
+        { label: 'Development',  data: chartData.development_expenditure, backgroundColor: '#00c896', borderRadius: 3 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8b90a7', font: { size: 11 } } } },
+      scales: {
+        x: { stacked: true, grid: { display: false }, ticks: { color: '#8b90a7' } },
+        y: { stacked: true, grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#8b90a7',
+          callback: v => v >= 1000 ? `${(v/1000).toFixed(1)}B` : `${v.toFixed(0)}M` } }
+      }
+    }
+  });
+}
+
+// AI analysis
+function loadAnalysis() {
+  const panel = document.getElementById('aiPanel');
+  panel.innerHTML = '<p class="ai-loading">Analysing fiscal data…</p>';
+  fetch('/api/county/{{ county.id }}/analysis')
+    .then(r => r.json())
+    .then(d => {
+      const scoreColor = d.fiscal_health_score >= 70 ? '#00c896' : d.fiscal_health_score >= 50 ? '#f5a623' : '#ff4d6a';
+      panel.innerHTML = `
+        <div class="ai-score" style="--score-color:${scoreColor}">
+          <span class="score-num">${d.fiscal_health_score}</span>
+          <span class="score-label">${d.health_label} · ${d.trend_assessment}</span>
+        </div>
+        <p class="ai-summary">${d.summary}</p>
+        <div class="ai-sections">
+          <div class="ai-section"><h4>Top Risks</h4><ul>${(d.top_risks||[]).map(r=>`<li>${r}</li>`).join('')}</ul></div>
+          <div class="ai-section"><h4>Revenue Signals</h4><ul>${(d.revenue_signals||[]).map(r=>`<li>${r}</li>`).join('')}</ul></div>
+          <div class="ai-section"><h4>Audit Flags</h4><ul>${(d.audit_flags||[]).map(r=>`<li>${r}</li>`).join('')}</ul></div>
+        </div>
+        <div class="ai-recs"><h4>Recommendations</h4><ol>${(d.recommendations||[]).map(r=>`<li>${r}</li>`).join('')}</ol></div>`;
+    })
+    .catch(() => { panel.innerHTML = '<p class="ai-error">Analysis unavailable.</p>'; });
+}
+</script>
+{% endblock %}
