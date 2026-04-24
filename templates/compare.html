@@ -69,6 +69,17 @@
   </div>
 </div>
 
+<!-- === AI ENHANCEMENT 3: Compare AI Narrative === -->
+<div id="compareAICard" style="display:none;margin-top:1.5rem;" class="card ai-card">
+  <div class="card-head">
+    <h2 class="card-title">AI Analyst Note</h2>
+    <button class="btn btn-sm btn-primary" id="compareAIBtn" onclick="loadCompareAI()">Generate</button>
+  </div>
+  <div id="compareAIPanel" class="ai-panel">
+    <p class="ai-placeholder">Click Generate for a Claude-authored analyst note comparing these counties.</p>
+  </div>
+</div>
+
 <div id="compareEmpty" class="empty-state-lg">
   Select at least 2 counties and click Compare.
 </div>
@@ -104,6 +115,12 @@ function runCompare() {
       if (!data.length) return;
       document.getElementById('compareEmpty').style.display = 'none';
       document.getElementById('compareResults').style.display = 'block';
+      // === AI ENHANCEMENT 3: show AI card, reset its state ===
+      document.getElementById('compareAICard').style.display = 'block';
+      document.getElementById('compareAIPanel').innerHTML =
+        '<p class="ai-placeholder">Click Generate for a Claude-authored analyst note comparing these counties.</p>';
+      document.getElementById('compareAIBtn').disabled = false;
+      window._lastCompareQS = qs;
       renderTable(data);
       renderCharts(data);
     });
@@ -174,6 +191,24 @@ function renderCharts(data) {
     },
     options:sharedOpts
   });
+}
+
+// === AI ENHANCEMENT 3: Compare AI Narrative ===
+function loadCompareAI() {
+  const panel = document.getElementById('compareAIPanel');
+  const btn   = document.getElementById('compareAIBtn');
+  panel.innerHTML = '<p class="ai-loading">Analysing counties…</p>';
+  btn.disabled = true;
+  fetch('/api/compare/ai-narrative?' + (window._lastCompareQS || ''))
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      if (d.error) { panel.innerHTML = `<p class="ai-error">${d.error}</p>`; return; }
+      const paras = d.narrative.split('\n\n').filter(Boolean)
+        .map(p => `<p class="ai-summary" style="margin-bottom:10px;">${p.trim()}</p>`).join('');
+      panel.innerHTML = paras;
+    })
+    .catch(() => { btn.disabled = false; panel.innerHTML = '<p class="ai-error">Request failed.</p>'; });
 }
 </script>
 {% endblock %}

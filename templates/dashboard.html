@@ -181,6 +181,19 @@
   </div>
 
 </div><!-- /dash-grid -->
+
+<!-- === AI ENHANCEMENT 2: Platform Intelligence Brief === -->
+<div class="card ai-card" style="margin-top:1.5rem;">
+  <div class="card-head">
+    <h2 class="card-title">Platform Intelligence Brief</h2>
+    <button class="btn btn-sm btn-primary" id="dashBriefBtn" onclick="loadDashBrief()">
+      Generate AI Brief
+    </button>
+  </div>
+  <div id="dashBriefPanel" class="ai-panel">
+    <p class="ai-placeholder">Click "Generate AI Brief" for a Claude-authored executive summary of the current platform state — coverage, standout counties, and key fiscal trends.</p>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -272,5 +285,21 @@ function loadRankings(fiscalYear) {
 }
 
 function applyYearFilter(yr) { loadRankings(yr); }
+
+// === AI ENHANCEMENT 2: Dashboard AI Brief ===
+function loadDashBrief() {
+  const panel = document.getElementById('dashBriefPanel');
+  const btn   = document.getElementById('dashBriefBtn');
+  panel.innerHTML = '<p class="ai-loading">Generating platform intelligence brief…</p>';
+  btn.disabled = true;
+  fetch('/api/dashboard/ai-brief')
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      if (d.error) { panel.innerHTML = `<p class="ai-error">${d.error}</p>`; return; }
+      panel.innerHTML = `<div class="ai-brief-text">${d.brief.replace(/\n\n/g,'</p><p class="ai-brief-text">').replace(/\n/g,' ')}</div>`;
+    })
+    .catch(() => { btn.disabled = false; panel.innerHTML = '<p class="ai-error">Request failed.</p>'; });
+}
 </script>
 {% endblock %}

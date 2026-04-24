@@ -405,6 +405,8 @@ textarea.form-input { resize: vertical; }
                        background: var(--surface); border: 1px solid var(--border);
                        border-radius: var(--radius); }
 .diaspora-disclaimer p { font-size: 11px; color: var(--text3); line-height: 1.6; margin: 0; }
+.diaspora-card-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.diaspora-note-text    { font-size: 12.5px; color: var(--text2); line-height: 1.6; margin: 8px 0 4px; padding: 10px 12px; background: var(--bg3); border-left: 2px solid var(--purple); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 
 /* Responsive */
 @media (max-width: 600px) {
@@ -484,7 +486,9 @@ textarea.form-input { resize: vertical; }
 .ai-panel   { min-height: 60px; }
 .ai-placeholder { color: var(--text3); font-size: 13px; font-style: italic; padding: 8px 0; }
 .ai-loading { color: var(--cyan); font-size: 13px; padding: 8px 0; }
-.ai-error   { color: var(--red);  font-size: 13px; padding: 8px 0; }
+.ai-error      { color: var(--red);  font-size: 13px; padding: 8px 0; }
+.ai-brief-text { font-size: 13.5px; color: var(--text2); line-height: 1.7; }
+.ai-brief-text p { margin-bottom: 10px; }
 .ai-score {
   display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
   padding: 14px 18px; background: var(--bg3); border-radius: var(--radius);

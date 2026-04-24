@@ -64,11 +64,11 @@
   {% for item in county_scores %}
   {% set sc = item.score %}
   {% set c  = item.county %}
-  <a href="{{ url_for('county_detail', county_id=c.id) }}" class="diaspora-card"
-     data-rating="{{ sc.rating }}"
-     data-name="{{ c.name | lower }}"
-     data-trajectory="{{ item.trajectory }}"
-     data-score="{{ sc.score }}">
+  <div class="diaspora-card"
+       data-rating="{{ sc.rating }}"
+       data-name="{{ c.name | lower }}"
+       data-trajectory="{{ item.trajectory }}"
+       data-score="{{ sc.score }}">
 
     <!-- County name + region -->
     <div class="diaspora-card-top">
@@ -124,7 +124,15 @@
     </div>
     {% endif %}
 
-  </a>
+    <!-- === AI ENHANCEMENT 4: Investor Note + View link === -->
+    <div class="diaspora-card-actions">
+      <a href="{{ url_for('county_detail', county_id=c.id) }}" class="btn btn-sm btn-ghost" style="font-size:11px;">View County →</a>
+      <button class="btn btn-sm btn-outline" style="font-size:11px;"
+              onclick="diasporaGetNote({{ c.id }}, this)">Get Investor Note</button>
+    </div>
+    <div class="diaspora-note-panel" id="note-{{ c.id }}" style="display:none;"></div>
+
+  </div>
   {% endfor %}
 
   {% if not county_scores %}
@@ -219,5 +227,26 @@ document.querySelectorAll('.diaspora-filter').forEach(btn => {
 document.querySelectorAll('.diaspora-sort').forEach(btn => {
   btn.addEventListener('click', () => diasporaSetSort(btn.dataset.sort, btn));
 });
+
+// === AI ENHANCEMENT 4: per-county investor note ===
+function diasporaGetNote(countyId, btn) {
+  const panel = document.getElementById('note-' + countyId);
+  if (!panel) return;
+  // Toggle off if already loaded
+  if (panel.style.display === 'block') { panel.style.display = 'none'; btn.textContent = 'Get Investor Note'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+  panel.style.display = 'block';
+  panel.innerHTML = '<p class="ai-loading" style="font-size:11px;padding:6px 0;">Generating investor note…</p>';
+  fetch(`/api/county/${countyId}/investor-note`)
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      btn.textContent = 'Hide Note';
+      if (d.error) { panel.innerHTML = `<p class="ai-error" style="font-size:11px;">${d.error}</p>`; return; }
+      panel.innerHTML = `<p class="diaspora-note-text">${d.note}</p>`;
+    })
+    .catch(() => { btn.disabled = false; btn.textContent = 'Get Investor Note'; panel.innerHTML = '<p class="ai-error" style="font-size:11px;">Request failed.</p>'; });
+}
 </script>
 {% endblock %}

@@ -121,11 +121,50 @@ window.reviewLoadDoc = async function (docId, title) {
     _pageCount     = _pdfDoc.numPages;
     _pageNum       = 1;
     await _renderPage(1);
+    // === AI ENHANCEMENT 5: auto-summarise document after load ===
+    _rvAutoSummarise(docId, title, _pageCount);
   } catch (err) {
     console.error('PDF load error:', err);
     _appendBubble('error', 'Could not load PDF. The file may be missing on disk.');
   }
 };
+
+// Auto-trigger a summary request for the newly loaded document
+function _rvAutoSummarise(docId, title, pages) {
+  const prompt = `Summarise this document: "${title}" (${pages} pages). ` +
+    `Cover: document type, fiscal year, key financial figures mentioned, and any notable audit findings. ` +
+    `Be specific and concise — 4 to 6 sentences.`;
+
+  _showTyping();
+  elSendBtn.disabled = true;
+
+  fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages:  [{ role: 'user', content: prompt }],
+      mode:      _rvMode,
+      page:      'Document Review',
+      county_id: null,
+      doc_id:    docId,
+      doc_title: title,
+    }),
+  })
+  .then(r => r.json())
+  .then(data => {
+    _removeTyping();
+    elSendBtn.disabled = false;
+    const reply = data.reply || data.error || 'Summary unavailable.';
+    _rvHistory.push({ role: 'user', content: prompt });
+    _rvHistory.push({ role: 'assistant', content: reply });
+    const bubble = _appendBubble('assistant', reply);
+    _handlePdfDirectives(bubble);
+  })
+  .catch(() => {
+    _removeTyping();
+    elSendBtn.disabled = false;
+  });
+}
 
 // Jump to a specific page (used by [[PDF:id:page]] directive)
 async function _jumpToDocPage(docId, page) {

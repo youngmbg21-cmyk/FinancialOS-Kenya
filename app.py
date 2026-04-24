@@ -1453,10 +1453,40 @@ def api_county_metrics(county_id):
 @app.route("/api/county/<int:county_id>/analysis")
 @login_required
 def api_county_analysis(county_id):
-    county = County.query.get_or_404(county_id)
+    county  = County.query.get_or_404(county_id)
     metrics = FiscalMetric.query.filter_by(county_id=county_id).all()
-    opinions = AuditOpinion.query.filter_by(county_id=county_id).all()
+    opinions= AuditOpinion.query.filter_by(county_id=county_id).all()
 
+    # === AI ENHANCEMENT 1: real Claude analysis with rule-based fallback ===
+    if AI_AVAILABLE and app.config.get("ANTHROPIC_API_KEY"):
+        try:
+            ctx = _build_county_context(county_id)
+            inv = compute_investment_score(county_id)
+            if inv:
+                comp_str   = "; ".join(f"{k}: {v['score']}" for k, v in inv["components"].items())
+                score_line = f"Composite Investment Score: {inv['score']}/100 ({inv['rating']}). Components — {comp_str}"
+            else:
+                score_line = "Investment score: insufficient data."
+
+            sys_prompt = (
+                "You are a senior Kenyan county fiscal analyst. Analyse the provided data and return "
+                "ONLY a valid JSON object — no markdown, no extra text — with exactly these fields:\n"
+                '{"fiscal_health_score":<int 0-100>,"health_label":"Strong|Moderate|Weak|Critical",'
+                '"trend_assessment":"Improving|Stable|Deteriorating","summary":"<2-3 sentence paragraph citing specific numbers>",'
+                '"top_risks":["<3-4 specific data-driven risks>"],"revenue_signals":["<2-3 revenue observations with figures>"],'
+                '"audit_flags":["<2-3 audit observations>"],"recommendations":["<3-4 actionable items for county leadership>"]}'
+            )
+            raw = _call_claude(sys_prompt,
+                               f"{ctx}\n\n{score_line}\n\nProduce the fiscal analysis JSON.",
+                               max_tokens=1000)
+            raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            data = json.loads(raw)
+            data["ai_generated"] = True
+            return jsonify(data)
+        except Exception as exc:
+            app.logger.warning("County analysis Claude call failed (%s) — falling back to rule-based", exc)
+
+    # Rule-based fallback (original logic, kept intact)
     score = 60
     risks, audit_flags, rev_signals = [], [], []
 
@@ -1483,7 +1513,6 @@ def api_county_analysis(county_id):
         exp   = ym.get("total_expenditure",       0) or 0
         dev   = ym.get("development_expenditure", 0) or 0
         bills = ym.get("pending_bills",           0) or 0
-
         if rev > 0:
             osr_ratio = osr / rev
             if osr_ratio < 0.05:
@@ -1492,28 +1521,21 @@ def api_county_analysis(county_id):
             elif osr_ratio > 0.15:
                 score += 4
                 rev_signals.append(f"Strong own-source revenue ({osr_ratio*100:.1f}%) in {yr}")
-
             if bills / rev > 0.10:
                 score -= 8
                 risks.append(f"Pending bills at {bills/rev*100:.0f}% of revenue in {yr}")
-
         if exp > 0 and dev / exp < 0.20:
             score -= 4
             risks.append(f"Development spending below 20% in {yr}")
 
     score = max(0, min(100, score))
-    label = ("Strong" if score >= 70 else
-             "Moderate" if score >= 50 else
-             "Weak" if score >= 30 else "Critical")
+    label = ("Strong" if score >= 70 else "Moderate" if score >= 50 else "Weak" if score >= 30 else "Critical")
     trend = "Improving" if score >= 65 else "Stable" if score >= 45 else "Deteriorating"
-
     return jsonify({
-        "fiscal_health_score": score,
-        "health_label":        label,
-        "trend_assessment":    trend,
-        "top_risks":           risks[:4]       or ["Insufficient data for risk assessment"],
-        "revenue_signals":     rev_signals[:3] or ["Upload more CoB reports for revenue analysis"],
-        "audit_flags":         audit_flags[:3] or ["No OAG reports uploaded yet"],
+        "fiscal_health_score": score, "health_label": label, "trend_assessment": trend,
+        "top_risks":       risks[:4]       or ["Insufficient data for risk assessment"],
+        "revenue_signals": rev_signals[:3] or ["Upload more CoB reports for revenue analysis"],
+        "audit_flags":     audit_flags[:3] or ["No OAG reports uploaded yet"],
         "summary": (f"{county.name} County scores {score}/100 — {label} fiscal performance "
                     f"based on {len(metrics)} extracted metrics across {len(by_year)} fiscal year(s)."),
         "recommendations": [
@@ -1521,6 +1543,7 @@ def api_county_analysis(county_id):
             "Monitor pending bills as a share of annual revenue",
             "Compare development expenditure ratios against the 30% constitutional benchmark",
         ],
+        "ai_generated": False,
     })
 
 
@@ -1660,6 +1683,31 @@ def api_doc_status(doc_id):
         "pages":  doc.page_count,
         "title":  doc.detected_title,
     })
+
+
+# ---------------------------------------------------------------------------
+# === AI ENHANCEMENTS: shared Claude helper ===
+# ---------------------------------------------------------------------------
+
+def _call_claude(system_prompt: str, user_message: str, max_tokens: int = 900) -> str:
+    """Call Claude Haiku and return the response text. Raises on any error."""
+    client = anthropic.Anthropic(api_key=app.config["ANTHROPIC_API_KEY"])
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=max_tokens,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return resp.content[0].text
+
+
+def _ai_guard():
+    """Return a 503 JSON response if AI is unavailable, else None."""
+    if not AI_AVAILABLE:
+        return jsonify({"error": "AI engine not installed. Run: pip install anthropic"}), 503
+    if not app.config.get("ANTHROPIC_API_KEY"):
+        return jsonify({"error": "ANTHROPIC_API_KEY not set."}), 503
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1872,6 +1920,138 @@ def api_review_documents():
             "upload_date":   d.upload_date.strftime("%d %b %Y") if d.upload_date else "",
         })
     return jsonify(results)
+
+
+# ---------------------------------------------------------------------------
+# === AI ENHANCEMENT 2: Dashboard Platform Brief ===
+# ---------------------------------------------------------------------------
+
+@app.route("/api/dashboard/ai-brief")
+@login_required
+def api_dashboard_ai_brief():
+    err = _ai_guard()
+    if err:
+        return err
+    try:
+        ctx = _build_dashboard_context()
+        sys_prompt = (
+            "You are a senior fiscal intelligence analyst covering Kenya's 47 county governments. "
+            "Write a crisp 3-paragraph executive briefing based on the platform data provided. "
+            "Paragraph 1: overall platform coverage and data completeness. "
+            "Paragraph 2: standout performers and most-at-risk counties by name. "
+            "Paragraph 3: the single most important fiscal trend or audit pattern to watch. "
+            "Be specific — cite county names and numbers. No bullet points, no headers."
+        )
+        brief = _call_claude(sys_prompt, ctx, max_tokens=600)
+        return jsonify({"brief": brief.strip()})
+    except Exception as exc:
+        app.logger.error("Dashboard AI brief error: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# === AI ENHANCEMENT 3: Compare AI Narrative ===
+# ---------------------------------------------------------------------------
+
+@app.route("/api/compare/ai-narrative")
+@login_required
+def api_compare_ai_narrative():
+    err = _ai_guard()
+    if err:
+        return err
+
+    ids_raw     = request.args.get("counties", "")
+    fiscal_year = request.args.get("fiscal_year", "")
+
+    # Re-use the compare data already in the DB — build context string
+    county_summaries = []
+    for raw in ids_raw.split(","):
+        try:
+            cid = int(raw.strip())
+        except ValueError:
+            continue
+        c = County.query.get(cid)
+        if not c:
+            continue
+        mq = FiscalMetric.query.filter_by(county_id=cid)
+        if fiscal_year:
+            mq = mq.filter_by(fiscal_year=fiscal_year)
+        mvals = {m.metric_name: m.metric_value for m in mq.all()}
+        inv   = compute_investment_score(cid, fiscal_year=fiscal_year or None)
+        audit = (AuditOpinion.query.filter_by(county_id=cid)
+                 .order_by(AuditOpinion.fiscal_year.desc()).first())
+        lines = [f"County: {c.name} ({c.region} Region)"]
+        if inv:
+            lines.append(f"  Investment Score: {inv['score']}/100 ({inv['rating']})")
+        for k in ("total_revenue","own_source_revenue","total_expenditure",
+                  "development_expenditure","pending_bills"):
+            if k in mvals:
+                lines.append(f"  {k.replace('_',' ').title()}: KES {mvals[k]:.0f}M")
+        if audit:
+            lines.append(f"  Latest Audit ({audit.fiscal_year}): {audit.opinion_type}")
+        county_summaries.append("\n".join(lines))
+
+    if not county_summaries:
+        return jsonify({"error": "No county data found."}), 400
+
+    context = "\n\n".join(county_summaries)
+    sys_prompt = (
+        "You are a Kenyan county fiscal analyst. Given side-by-side county data, write a "
+        "2-paragraph analyst note. Paragraph 1: identify the sharpest fiscal differentiator "
+        "between the counties — the one metric or pattern that most separates them. "
+        "Paragraph 2: one key risk and one key opportunity for each county, by name. "
+        "Cite specific numbers. Be concise and direct."
+    )
+    try:
+        narrative = _call_claude(sys_prompt, context, max_tokens=500)
+        return jsonify({"narrative": narrative.strip()})
+    except Exception as exc:
+        app.logger.error("Compare AI narrative error: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# === AI ENHANCEMENT 4: Diaspora Investor Note ===
+# ---------------------------------------------------------------------------
+
+@app.route("/api/county/<int:county_id>/investor-note")
+@login_required
+def api_investor_note(county_id):
+    err = _ai_guard()
+    if err:
+        return err
+
+    county = County.query.get_or_404(county_id)
+    inv    = compute_investment_score(county_id)
+    if not inv:
+        return jsonify({"error": "Insufficient fiscal data to generate investor note."}), 400
+
+    comp_lines = "\n".join(
+        f"  {k.replace('_',' ').title()}: {v['score']}/100 ({v['label']})"
+        for k, v in inv["components"].items()
+    )
+    context = (
+        f"County: {county.name} ({county.region} Region, Kenya)\n"
+        f"Investment Score: {inv['score']}/100 — {inv['rating']}\n"
+        f"Fiscal Year: {inv['fiscal_year']}\n"
+        f"Score breakdown:\n{comp_lines}\n"
+        f"Methodology: {inv['methodology']}"
+    )
+    sys_prompt = (
+        "You are a diaspora investment analyst specialising in Kenyan county fiscal exposure. "
+        "Write a single paragraph (5-7 sentences) investor note for someone considering "
+        "property ownership, a SACCO investment, or a business operation in this county. "
+        "Draw directly from the fiscal score components — explain what each signal means "
+        "for their specific investment context. Be honest about risks. "
+        "Do not make specific buy/sell recommendations. End with one practical due-diligence question "
+        "the investor should ask before committing capital."
+    )
+    try:
+        note = _call_claude(sys_prompt, context, max_tokens=400)
+        return jsonify({"note": note.strip()})
+    except Exception as exc:
+        app.logger.error("Investor note error: %s", exc)
+        return jsonify({"error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
