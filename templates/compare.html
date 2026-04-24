@@ -115,7 +115,14 @@ function renderTable(data) {
   const auditLabels = {unqualified:'Clean',qualified:'Qualified',adverse:'Adverse',disclaimer:'Disclaimer'};
   const auditClass  = {unqualified:'badge-success',qualified:'badge-warning',adverse:'badge-danger',disclaimer:'badge-critical'};
 
-  thead.innerHTML = `<tr><th>Metric</th>${data.map((c,i)=>`<th class="text-right" style="color:${COLORS[i]}">${c.county_name}</th>`).join('')}</tr>`;
+  // === PHASE 1: score badge in column header ===
+  const RATING_CLASS = {Strong:'badge-success',Stable:'badge-info',Watch:'badge-warning',Weak:'badge-danger',Distressed:'badge-critical'};
+  thead.innerHTML = `<tr><th>Metric</th>${data.map((c,i)=>{
+    const scoreBadge = c.investment_score != null
+      ? ` <span class="badge ${RATING_CLASS[c.investment_rating]||'badge-neutral'}" style="font-size:9px;vertical-align:middle;">${c.investment_score}</span>`
+      : '';
+    return `<th class="text-right" style="color:${COLORS[i]}">${c.county_name}${scoreBadge}</th>`;
+  }).join('')}</tr>`;
 
   const rows = Object.entries(METRIC_LABELS).map(([k,label]) =>
     `<tr><td>${label}</td>${data.map(c=>`<td class="text-right mono">${fmtM(c.metrics[k])}</td>`).join('')}</tr>`

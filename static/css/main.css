@@ -224,6 +224,7 @@ a:hover { color: var(--cyan); }
 /* ── Badges ───────────────────────────────────────────────── */
 .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; }
 .badge-success  { background: var(--green-dim);  color: var(--green); }
+.badge-info     { background: var(--cyan-dim);   color: var(--cyan); }
 .badge-warning  { background: var(--yellow-dim); color: var(--yellow); }
 .badge-danger   { background: var(--red-dim);    color: var(--red); }
 .badge-critical { background: var(--purple-dim); color: var(--purple); }
@@ -336,6 +337,9 @@ textarea.form-input { resize: vertical; }
 .county-card-metric .metric-value { font-size: 15px; font-weight: 600; color: var(--cyan); }
 .county-card-metric.empty { color: var(--text3); font-size: 12px; font-style: italic; }
 .county-card-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+/* === PHASE 1: score badge on county card === */
+.county-score-badge { display: flex; align-items: center; gap: 5px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.score-num-sm       { font-size: 18px; font-weight: 700; color: var(--text); line-height: 1; }
 .doc-count-sm { font-size: 11px; color: var(--text3); }
 
 /* ── Latest uploads feed ──────────────────────────────────── */

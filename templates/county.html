@@ -25,7 +25,7 @@
 </div>
 
 <!-- ── KPI cards ──────────────────────────────────────────────────── -->
-<div class="kpi-grid kpi-grid-3">
+<div class="kpi-grid">
   <div class="kpi-card">
     <div class="kpi-icon kpi-blue">
       <svg viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
@@ -63,6 +63,32 @@
       <span class="kpi-label">Latest Audit Opinion</span>
     </div>
   </div>
+
+  <!-- === PHASE 1: Investment Score KPI card === -->
+  {% if inv_score %}
+  <div class="kpi-card" title="{{ inv_score.methodology }} | Fiscal Health 30%: pending bills/revenue. Execution Capacity 25%: dev expenditure/total. Governance 25%: audit opinion. Revenue Strength 20%: OSR/total revenue.">
+    <div class="kpi-icon kpi-cyan">
+      <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+    </div>
+    <div class="kpi-body">
+      <span class="kpi-value">
+        {{ inv_score.score }}<span class="kpi-unit" style="font-size:13px;">/100</span>
+        <span class="badge {{ inv_score.rating | rating_class }}" style="margin-left:6px;font-size:10px;">{{ inv_score.rating }}</span>
+      </span>
+      <span class="kpi-label">Investment Score · {{ inv_score.fiscal_year }}</span>
+    </div>
+  </div>
+  {% else %}
+  <div class="kpi-card">
+    <div class="kpi-icon kpi-neutral">
+      <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+    </div>
+    <div class="kpi-body">
+      <span class="kpi-value">—</span>
+      <span class="kpi-label">Investment Score (no data)</span>
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <!-- ── Charts ─────────────────────────────────────────────────────── -->

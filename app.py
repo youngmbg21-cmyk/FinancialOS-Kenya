@@ -394,6 +394,18 @@ def status_class(status: str) -> str:
     }.get(status or "", "status-neutral")
 
 
+# === PHASE 1: rating badge CSS class ===
+@app.template_filter("rating_class")
+def rating_class(rating: str) -> str:
+    return {
+        "Strong":     "badge-success",
+        "Stable":     "badge-info",
+        "Watch":      "badge-warning",
+        "Weak":       "badge-danger",
+        "Distressed": "badge-critical",
+    }.get(rating or "", "badge-neutral")
+
+
 # ---------------------------------------------------------------------------
 # Error handlers  (templates created in Batch 5)
 # ---------------------------------------------------------------------------
@@ -837,6 +849,120 @@ def dashboard():
 
 
 # ---------------------------------------------------------------------------
+# === PHASE 1: County Investment Score ===
+# ---------------------------------------------------------------------------
+
+_RATING_BANDS = [(80, "Strong"), (65, "Stable"), (50, "Watch"), (35, "Weak"), (0, "Distressed")]
+
+def compute_investment_score(county_id, fiscal_year=None):
+    """Return a 0–100 composite investment score dict for a county, or None if no data."""
+    # Resolve fiscal year
+    if not fiscal_year:
+        row = (db.session.query(FiscalMetric.fiscal_year)
+               .filter_by(county_id=county_id)
+               .order_by(FiscalMetric.fiscal_year.desc())
+               .first())
+        if not row:
+            return None
+        fiscal_year = row[0]
+
+    raw_metrics = FiscalMetric.query.filter_by(county_id=county_id, fiscal_year=fiscal_year).all()
+    if not raw_metrics:
+        return None
+    m = {r.metric_name: r.metric_value for r in raw_metrics}
+
+    audit = (AuditOpinion.query
+             .filter_by(county_id=county_id)
+             .order_by(AuditOpinion.fiscal_year.desc())
+             .first())
+
+    WEIGHTS = {
+        "fiscal_health":      0.30,
+        "execution_capacity": 0.25,
+        "governance_quality": 0.25,
+        "revenue_strength":   0.20,
+    }
+    components = {}
+    skipped    = []
+
+    # 1. Fiscal Health — pending bills as % of total revenue (lower is better)
+    if m.get("pending_bills") is not None and m.get("total_revenue"):
+        pb_pct = m["pending_bills"] / m["total_revenue"] * 100
+        if pb_pct < 5:    s = 100
+        elif pb_pct < 10: s = 80
+        elif pb_pct < 20: s = 60
+        elif pb_pct < 30: s = 40
+        else:             s = 20
+        components["fiscal_health"] = {"raw": round(pb_pct, 1), "score": s,
+                                        "label": f"{round(pb_pct,1)}% pending/revenue"}
+    else:
+        skipped.append("fiscal_health")
+
+    # 2. Execution Capacity — development expenditure as % of total expenditure
+    if m.get("development_expenditure") is not None and m.get("total_expenditure"):
+        dev_pct = m["development_expenditure"] / m["total_expenditure"] * 100
+        if dev_pct > 35:    s = 100
+        elif dev_pct > 30:  s = 85
+        elif dev_pct > 25:  s = 70
+        elif dev_pct > 20:  s = 55
+        elif dev_pct > 15:  s = 40
+        else:               s = 25
+        components["execution_capacity"] = {"raw": round(dev_pct, 1), "score": s,
+                                             "label": f"{round(dev_pct,1)}% dev/expenditure"}
+    else:
+        skipped.append("execution_capacity")
+
+    # 3. Governance Quality — OAG audit opinion (always computable, defaults to neutral)
+    _opinion_scores = {"unqualified": 100, "qualified": 65, "adverse": 30, "disclaimer": 15}
+    gq_score = _opinion_scores.get(audit.opinion_type, 50) if audit else 50
+    components["governance_quality"] = {
+        "raw":   audit.opinion_type if audit else None,
+        "score": gq_score,
+        "label": (audit.opinion_type.title() if audit else "No audit (neutral 50)"),
+    }
+
+    # 4. Revenue Strength — own-source revenue as % of total revenue
+    if m.get("own_source_revenue") is not None and m.get("total_revenue"):
+        osr_pct = m["own_source_revenue"] / m["total_revenue"] * 100
+        if osr_pct > 25:    s = 100
+        elif osr_pct > 20:  s = 85
+        elif osr_pct > 15:  s = 70
+        elif osr_pct > 10:  s = 55
+        elif osr_pct > 5:   s = 40
+        else:               s = 25
+        components["revenue_strength"] = {"raw": round(osr_pct, 1), "score": s,
+                                           "label": f"{round(osr_pct,1)}% own-source"}
+    else:
+        skipped.append("revenue_strength")
+
+    if not components:
+        return None
+
+    # Re-weight proportionally if any component was skipped
+    total_weight = sum(WEIGHTS[k] for k in components)
+    score = round(sum(components[k]["score"] * WEIGHTS[k] / total_weight for k in components))
+
+    _skip_names = {"fiscal_health": "Fiscal Health", "execution_capacity": "Execution Capacity",
+                   "revenue_strength": "Revenue Strength"}
+    if skipped:
+        methodology = (f"{len(components)} of 4 components computed. "
+                       f"Excluded (no data): {', '.join(_skip_names[s] for s in skipped)}. "
+                       f"Weights redistributed proportionally.")
+    else:
+        methodology = "All 4 components computed from extracted fiscal data."
+
+    rating = next(label for threshold, label in _RATING_BANDS if score >= threshold)
+
+    return {
+        "score":       score,
+        "rating":      rating,
+        "fiscal_year": fiscal_year,
+        "components":  components,
+        "methodology": methodology,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Routes — counties list
 # ---------------------------------------------------------------------------
 
@@ -863,6 +989,7 @@ def counties():
                         .order_by(AuditOpinion.fiscal_year.desc())
                         .first())
         doc_count = Document.query.filter_by(county_id=c.id).count()
+        inv_score = compute_investment_score(c.id)
         county_data.append({
             "county":       c,
             "doc_count":    doc_count,
@@ -870,6 +997,7 @@ def counties():
             "latest_year":  latest_metric.fiscal_year  if latest_metric else None,
             "audit":        latest_audit.opinion_type  if latest_audit  else None,
             "audit_year":   latest_audit.fiscal_year   if latest_audit  else None,
+            "inv_score":    inv_score,
         })
 
     return render_template("counties.html",
@@ -928,6 +1056,8 @@ def county_detail(county_id):
 
     latest_audit = audit_opinions[0] if audit_opinions else None
 
+    inv_score = compute_investment_score(county_id, fiscal_year=latest_year)
+
     return render_template("county.html",
         county=county,
         documents=documents,
@@ -938,6 +1068,7 @@ def county_detail(county_id):
         latest=latest,
         latest_year=latest_year,
         latest_audit=latest_audit,
+        inv_score=inv_score,
     )
 
 
@@ -1353,12 +1484,15 @@ def api_compare():
                         .order_by(AuditOpinion.fiscal_year.desc())
                         .first())
 
+        inv = compute_investment_score(cid, fiscal_year=fiscal_year or None)
         result.append({
-            "county_id":   cid,
-            "county_name": county.name,
-            "region":      county.region,
-            "metrics":     metrics,
-            "audit":       latest_audit.opinion_type if latest_audit else None,
+            "county_id":        cid,
+            "county_name":      county.name,
+            "region":           county.region,
+            "metrics":          metrics,
+            "audit":            latest_audit.opinion_type if latest_audit else None,
+            "investment_score": inv["score"]  if inv else None,
+            "investment_rating":inv["rating"] if inv else None,
         })
 
     return jsonify(result)
