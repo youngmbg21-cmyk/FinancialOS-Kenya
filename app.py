@@ -17,6 +17,9 @@ from functools import wraps
 from flask import (Flask, render_template, redirect, url_for, abort,
                    request, flash, jsonify, send_file, session)
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import deferred
+from sqlalchemy import func
+from collections import defaultdict
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                          login_required, current_user)
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -221,6 +224,13 @@ class County(db.Model):
 
 class Document(db.Model):
     __tablename__ = "documents"
+    __table_args__ = (
+        db.Index("ix_doc_county_id",   "county_id"),
+        db.Index("ix_doc_fiscal_year", "fiscal_year"),
+        db.Index("ix_doc_status",      "processing_status"),
+        db.Index("ix_doc_source",      "source"),
+        db.Index("ix_doc_upload_date", "upload_date"),
+    )
 
     id               = db.Column(db.Integer, primary_key=True)
     uuid             = db.Column(db.String(36), unique=True, default=lambda: str(uuid.uuid4()))
@@ -241,7 +251,8 @@ class Document(db.Model):
     page_count      = db.Column(db.Integer)
     detected_title  = db.Column(db.String(500))
     file_size       = db.Column(db.Integer)       # bytes
-    text_content    = db.Column(db.Text)          # full extracted text (searchable)
+    # Deferred: only loaded when explicitly accessed, not in list queries
+    text_content    = deferred(db.Column(db.Text))
 
     # Processing lifecycle
     processing_status       = db.Column(db.String(20), default="pending")
@@ -278,6 +289,11 @@ class Document(db.Model):
 
 class FiscalMetric(db.Model):
     __tablename__ = "fiscal_metrics"
+    __table_args__ = (
+        db.Index("ix_fm_county_fiscal", "county_id", "fiscal_year"),
+        db.Index("ix_fm_metric_name",   "metric_name"),
+        db.Index("ix_fm_document_id",   "document_id"),
+    )
 
     id              = db.Column(db.Integer, primary_key=True)
     document_id     = db.Column(db.Integer, db.ForeignKey("documents.id"))
@@ -297,6 +313,10 @@ class FiscalMetric(db.Model):
 
 class AuditOpinion(db.Model):
     __tablename__ = "audit_opinions"
+    __table_args__ = (
+        db.Index("ix_ao_county_fiscal", "county_id", "fiscal_year"),
+        db.Index("ix_ao_document_id",   "document_id"),
+    )
 
     id               = db.Column(db.Integer, primary_key=True)
     document_id      = db.Column(db.Integer, db.ForeignKey("documents.id"))
@@ -489,15 +509,14 @@ def extract_pdf_metadata(filepath: str):
     try:
         with pdfplumber.open(filepath) as pdf:
             page_count = len(pdf.pages)
-            # First 3 pages for title detection
-            head_text = ""
-            for page in pdf.pages[:3]:
-                head_text += (page.extract_text() or "")
-            title = _detect_title(head_text)
-            # Full text capped at 120 pages for performance
-            full_text = ""
-            for page in pdf.pages[:120]:
-                full_text += (page.extract_text() or "") + "\n"
+            # Read once, capped at 60 pages — key tables in CoB/OAG reports
+            # appear in the first half; reading beyond wastes time for no gain
+            parts = []
+            for page in pdf.pages[:60]:
+                parts.append(page.extract_text() or "")
+            full_text = "\n".join(parts)
+            # Reuse the first ~3 pages worth of text for title detection
+            title = _detect_title(full_text[:4000])
             return page_count, title, full_text
     except Exception as exc:
         app.logger.error("PDF extraction failed for %s: %s", filepath, exc)
@@ -516,12 +535,15 @@ def _detect_title(text: str) -> str | None:
     return lines[0][:300] if lines else None
 
 
+# Pre-sorted once at startup — longest aliases first to avoid substring collisions
+_SORTED_COUNTY_ALIASES = sorted(_COUNTY_ALIASES, key=len, reverse=True)
+
+
 def detect_county_from_text(text: str) -> str | None:
     if not text:
         return None
     tl = text.lower()
-    # Aliases first (longer phrases before substrings)
-    for alias in sorted(_COUNTY_ALIASES, key=len, reverse=True):
+    for alias in _SORTED_COUNTY_ALIASES:
         if alias in tl:
             return _COUNTY_ALIASES[alias]
     for name in _COUNTY_NAMES:
@@ -667,11 +689,22 @@ _RISK_KEYWORDS = (
     "irregular", "fraudulent", "wasteful", "unvouched", "unexplained",
 )
 
+# Compile all patterns once at startup — avoids re-compiling on every document
+_COMPILED_METRIC_PATTERNS: dict[str, list[re.Pattern]] = {
+    metric: [re.compile(pat, re.IGNORECASE | re.MULTILINE) for pat in patterns]
+    for metric, patterns in METRIC_PATTERNS.items()
+}
+_COMPILED_AUDIT_PATTERNS: dict[str, list[re.Pattern]] = {
+    otype: [re.compile(pat, re.IGNORECASE) for pat in patterns]
+    for otype, patterns in AUDIT_PATTERNS.items()
+}
+_RE_SENTENCE_SPLIT = re.compile(r"[.!?]")
 
-def extract_metric(text: str, patterns: list[str]) -> tuple:
+
+def extract_metric(text: str, patterns: list) -> tuple:
     """Return (value_float, source_snippet) for the first matching pattern."""
     for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
+        m = pat.search(text)
         if m:
             value = _parse_amount(m.group(1))
             if value:
@@ -685,16 +718,15 @@ def extract_audit_opinion(text: str) -> tuple:
         return None, []
     tl = text.lower()
     opinion = None
-    # Check in severity order so worst wins if multiple match
     for otype in ("disclaimer", "adverse", "qualified", "unqualified"):
-        for pat in AUDIT_PATTERNS[otype]:
-            if re.search(pat, tl):
+        for pat in _COMPILED_AUDIT_PATTERNS[otype]:
+            if pat.search(tl):
                 opinion = otype
                 break
         if opinion:
             break
     observations = []
-    for sentence in re.split(r"[.!?]", text):
+    for sentence in _RE_SENTENCE_SPLIT.split(text):
         s = sentence.strip()
         if len(s) > 40 and any(kw in s.lower() for kw in _RISK_KEYWORDS):
             observations.append(s[:300])
@@ -753,7 +785,7 @@ def process_document_task(doc_id: int) -> None:
 
                 # Extract fiscal metrics
                 if doc.county_id and doc.fiscal_year:
-                    for metric_name, patterns in METRIC_PATTERNS.items():
+                    for metric_name, patterns in _COMPILED_METRIC_PATTERNS.items():
                         value, snippet = extract_metric(text, patterns)
                         if value:
                             # Dedup per county+year+metric (not per document) so that
@@ -2181,22 +2213,35 @@ def _compute_data_health() -> dict:
         .count()
     )
 
+    # 3 bulk queries replace 141 per-county queries (3 × 47 counties)
+    doc_counts_by_county = dict(
+        db.session.query(Document.county_id, func.count(Document.id))
+        .filter(Document.processing_status == "completed",
+                Document.county_id.isnot(None))
+        .group_by(Document.county_id)
+        .all()
+    )
+
+    metrics_by_county = defaultdict(list)
+    for m in FiscalMetric.query.all():
+        metrics_by_county[m.county_id].append(m)
+
+    # Latest audit opinion per county — one query, group in Python
+    latest_audit_by_county = {}
+    for audit in AuditOpinion.query.order_by(AuditOpinion.fiscal_year.desc()).all():
+        if audit.county_id not in latest_audit_by_county:
+            latest_audit_by_county[audit.county_id] = audit
+
     county_data = []
     for county in County.query.order_by(County.name).all():
-        doc_count = Document.query.filter_by(
-            county_id=county.id, processing_status="completed"
-        ).count()
-        metrics = FiscalMetric.query.filter_by(county_id=county.id).all()
-        audit   = (
-            AuditOpinion.query.filter_by(county_id=county.id)
-            .order_by(AuditOpinion.fiscal_year.desc())
-            .first()
-        )
+        doc_count = doc_counts_by_county.get(county.id, 0)
+        metrics   = metrics_by_county.get(county.id, [])
+        audit     = latest_audit_by_county.get(county.id)
 
         years             = sorted({m.fiscal_year for m in metrics if m.fiscal_year})
-        has_revenue       = any(m.total_revenue       for m in metrics)
-        has_expenditure   = any(m.total_expenditure   for m in metrics)
-        has_pending_bills = any(m.pending_bills       for m in metrics)
+        has_revenue       = any(m.metric_name == "total_revenue"       and m.metric_value for m in metrics)
+        has_expenditure   = any(m.metric_name == "total_expenditure"   and m.metric_value for m in metrics)
+        has_pending_bills = any(m.metric_name == "pending_bills"       and m.metric_value for m in metrics)
         has_audit         = audit is not None
         metrics_count     = sum([has_revenue, has_expenditure, has_pending_bills, has_audit])
 
