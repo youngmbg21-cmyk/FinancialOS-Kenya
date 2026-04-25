@@ -1935,7 +1935,7 @@ def api_chat():
             model="claude-opus-4-7",
             max_tokens=2000,
             system=_build_system_prompt(page, county_id, mode, doc_id=doc_id),
-            messages=[{"role": m["role"], "content": m["content"]} for m in messages[-20:]],
+            messages=[{"role": m["role"], "content": m["content"]} for m in messages[-20:] if m.get('content', '').strip()],
         )
         return jsonify({"reply": response.content[0].text})
     except Exception as exc:
