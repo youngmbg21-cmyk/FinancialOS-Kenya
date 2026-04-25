@@ -129,26 +129,18 @@
 
 <!-- ═══════════════════════════ FISCALOS AI CHATBOT ═══════════════════════════ -->
 
-<!-- Floating trigger (visible when chat is closed) -->
 <button class="chat-trigger" id="chatTrigger" onclick="chatOpen()" title="FiscalOS AI">
   <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg>
-  <span class="chat-badge" id="chatBadge">AI</span>
+  <span class="chat-badge">AI</span>
 </button>
 
-<!-- Minimised tab -->
 <div class="chat-minimised" id="chatMinimised" style="display:none;" onclick="chatUnminimise()">
   <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#fff;flex-shrink:0;"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
-  <div>
-    <div class="chat-min-title">FiscalOS AI</div>
-    <div class="chat-min-sub">Click to expand</div>
-  </div>
+  <div><div class="chat-min-title">FiscalOS AI</div><div class="chat-min-sub">Click to expand</div></div>
   <span style="font-size:11px;color:rgba(255,255,255,0.7);">▲</span>
 </div>
 
-<!-- Main chat panel -->
 <div class="chat-panel" id="chatPanel" style="display:none;">
-
-  <!-- Header -->
   <div class="chat-header">
     <div class="chat-header-row">
       <div class="chat-avatar">
@@ -160,27 +152,19 @@
       </div>
       <div class="chat-header-btns">
         <div class="chat-mode-toggle">
-          <button class="chat-mode-btn active" id="chatModeSimple"
-                  onclick="chatSetMode('simple')" title="Plain English">SIMPLE</button>
-          <button class="chat-mode-btn" id="chatModeExpert"
-                  onclick="chatSetMode('expert')" title="Analyst-level depth">EXPERT</button>
+          <button class="chat-mode-btn active" id="chatModeSimple" onclick="chatSetMode('simple')">SIMPLE</button>
+          <button class="chat-mode-btn" id="chatModeExpert" onclick="chatSetMode('expert')">EXPERT</button>
         </div>
-        <button class="chat-hbtn" onclick="chatClear()" title="Clear chat">CLEAR</button>
-        <button class="chat-hbtn" id="chatExpandBtn" onclick="chatToggleExpand()" title="Expand">⇤</button>
-        <button class="chat-hbtn" onclick="chatMinimise()" title="Minimise">▼</button>
-        <button class="chat-hbtn" onclick="chatClose()" title="Close">✕</button>
+        <button class="chat-hbtn" onclick="chatClear()">CLEAR</button>
+        <button class="chat-hbtn" id="chatExpandBtn" onclick="chatToggleExpand()">⇤</button>
+        <button class="chat-hbtn" onclick="chatMinimise()">▼</button>
+        <button class="chat-hbtn" onclick="chatClose()">✕</button>
       </div>
     </div>
-    <!-- Context pills: page + county -->
     <div class="chat-pills" id="chatPills"></div>
   </div>
-
-  <!-- Messages -->
   <div class="chat-messages" id="chatMessages"></div>
-
-  <!-- Input -->
   <div class="chat-input-area">
-    <!-- Suggestion chips -->
     <div class="chat-suggestions" id="chatSuggestions"></div>
     <div class="chat-input-row">
       <textarea class="chat-input" id="chatInput" rows="2"
@@ -191,10 +175,8 @@
       </button>
     </div>
   </div>
+</div>
 
-</div><!-- /chat-panel -->
-
-<!-- data attributes so JS can read Flask-rendered values -->
 <div id="fosContext"
      data-page="{{ request.endpoint | replace('_',' ') | title }}"
      data-county-id="{{ request.view_args.get('county_id', '') if request.view_args else '' }}"
@@ -204,5 +186,185 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 {% block scripts %}{% endblock %}
+
+<script>
+/* ── FiscalOS AI Chatbot ──────────────────────────────────────────────── */
+(function () {
+  const MAX_HISTORY = 20;
+  let _history  = [];
+  let _mode     = 'simple';
+  let _expanded = false;
+
+  const $ = id => document.getElementById(id);
+
+  function _ctx() {
+    const el = $('fosContext');
+    if (!el) return { page: '', countyId: '', userRole: 'viewer' };
+    return { page: el.dataset.page || '', countyId: el.dataset.countyId || '', userRole: el.dataset.userRole || 'viewer' };
+  }
+
+  window.chatOpen = function () {
+    $('chatTrigger').style.display  = 'none';
+    $('chatMinimised').style.display = 'none';
+    $('chatPanel').style.display    = 'flex';
+    _buildPills();
+    _buildSuggestions();
+    if (_history.length === 0) _welcome();
+    $('chatInput').focus();
+  };
+  window.chatClose = function () {
+    $('chatPanel').style.display   = 'none';
+    $('chatMinimised').style.display = 'none';
+    $('chatTrigger').style.display = 'flex';
+  };
+  window.chatMinimise = function () {
+    $('chatPanel').style.display    = 'none';
+    $('chatMinimised').style.display = 'flex';
+    $('chatTrigger').style.display  = 'none';
+  };
+  window.chatUnminimise = function () {
+    $('chatMinimised').style.display = 'none';
+    $('chatPanel').style.display    = 'flex';
+    $('chatInput').focus();
+  };
+  window.chatToggleExpand = function () {
+    _expanded = !_expanded;
+    $('chatPanel').classList.toggle('expanded', _expanded);
+    $('chatExpandBtn').textContent = _expanded ? '⇥' : '⇤';
+  };
+  window.chatSetMode = function (mode) {
+    _mode = mode;
+    $('chatModeSimple').classList.toggle('active', mode === 'simple');
+    $('chatModeExpert').classList.toggle('active', mode === 'expert');
+    $('chatSubtitle').textContent = mode === 'expert'
+      ? 'Analyst Mode — detailed fiscal breakdown'
+      : 'Kenya County Fiscal Intelligence';
+  };
+  window.chatClear = function () {
+    _history = [];
+    $('chatMessages').innerHTML = '';
+    _welcome();
+    _buildSuggestions();
+  };
+  window.chatUseSuggestion = function (btn) {
+    $('chatInput').value = btn.textContent;
+    $('chatSuggestions').innerHTML = '';
+    chatSend();
+  };
+
+  function _welcome() {
+    const ctx = _ctx();
+    const text = ctx.countyId
+      ? "I'm viewing county data with you. Ask me anything about this county's fiscal performance, budget trends, or audit history."
+      : "Hello! I'm FiscalOS AI. Ask me about any of Kenya's 47 counties — revenue allocation, expenditure trends, audit opinions, OSR rates, and more.";
+    _bubble('assistant', text);
+  }
+
+  function _buildPills() {
+    const ctx = _ctx();
+    const pills = [];
+    if (ctx.page)     pills.push(`<span class="chat-pill">${ctx.page}</span>`);
+    if (ctx.countyId) pills.push(`<span class="chat-pill county-pill">County #${ctx.countyId}</span>`);
+    $('chatPills').innerHTML = pills.join('');
+  }
+
+  const SUGGESTIONS_GENERAL = [
+    'Which county has the highest OSR?',
+    'Show me counties with adverse audit opinions',
+    'Compare Nairobi and Mombasa revenue',
+    'What is the average absorption rate?',
+    'Top 5 counties by development expenditure',
+  ];
+  const SUGGESTIONS_COUNTY = [
+    'Show revenue trend for this county',
+    'What was the latest audit opinion?',
+    'Compare OSR vs national average',
+    'Show expenditure breakdown chart',
+    'Any pending bills concerns?',
+  ];
+
+  function _buildSuggestions() {
+    const ctx = _ctx();
+    const list = ctx.countyId ? SUGGESTIONS_COUNTY : SUGGESTIONS_GENERAL;
+    const picked = [...list].sort(() => 0.5 - Math.random()).slice(0, 3);
+    $('chatSuggestions').innerHTML = picked
+      .map(s => `<button class="chat-suggest-btn" onclick="chatUseSuggestion(this)">${s}</button>`)
+      .join('');
+  }
+
+  window.chatSend = function () {
+    const text = $('chatInput').value.trim();
+    if (!text) return;
+    $('chatInput').value = '';
+    $('chatSuggestions').innerHTML = '';
+
+    _history.push({ role: 'user', content: text });
+    if (_history.length > MAX_HISTORY) _history = _history.slice(-MAX_HISTORY);
+    _bubble('user', text);
+
+    // Typing indicator
+    const typing = document.createElement('div');
+    typing.className = 'chat-bubble chat-bubble-assistant chat-typing';
+    typing.innerHTML = '<span></span><span></span><span></span>';
+    $('chatMessages').appendChild(typing);
+    $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+    $('chatSendBtn').disabled = true;
+
+    const ctx = _ctx();
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages:  _history.slice(-MAX_HISTORY),
+        mode:      _mode,
+        page:      ctx.page,
+        county_id: ctx.countyId || null,
+      }),
+    })
+    .then(r => r.json())
+    .then(data => {
+      typing.remove();
+      $('chatSendBtn').disabled = false;
+      const reply = data.reply || data.error || 'No response received.';
+      _history.push({ role: 'assistant', content: reply });
+      if (_history.length > MAX_HISTORY) _history = _history.slice(-MAX_HISTORY);
+      _bubble('assistant', reply);
+      _buildSuggestions();
+    })
+    .catch(() => {
+      typing.remove();
+      $('chatSendBtn').disabled = false;
+      _bubble('error', 'Network error — please try again.');
+    });
+  };
+
+  function _esc(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function _renderMd(text) {
+    let s = _esc(text);
+    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\*(.+?)\*/g,     '<em>$1</em>');
+    s = s.replace(/`(.+?)`/g,       '<code>$1</code>');
+    s = s.replace(/\n{2,}/g, '</p><p>');
+    s = s.replace(/\n/g, '<br>');
+    return `<p>${s}</p>`;
+  }
+
+  function _bubble(role, text) {
+    const el = document.createElement('div');
+    el.className = role === 'user'
+      ? 'chat-bubble chat-bubble-user'
+      : role === 'error'
+        ? 'chat-bubble chat-bubble-assistant chat-bubble-error'
+        : 'chat-bubble chat-bubble-assistant';
+    el.innerHTML = role === 'user' ? _esc(text) : _renderMd(text);
+    $('chatMessages').appendChild(el);
+    $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+    return el;
+  }
+})();
+</script>
 </body>
 </html>

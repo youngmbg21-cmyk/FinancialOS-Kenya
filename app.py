@@ -37,6 +37,17 @@ try:
 except ImportError:
     AI_AVAILABLE = False
 
+_anthropic_client = None   # module-level singleton, initialised on first use
+
+
+def _get_ai_client():
+    global _anthropic_client
+    if _anthropic_client is None and AI_AVAILABLE:
+        _anthropic_client = anthropic.Anthropic(
+            api_key=app.config["ANTHROPIC_API_KEY"]
+        )
+    return _anthropic_client
+
 try:
     import openpyxl          # noqa: F401
     EXCEL_AVAILABLE = True
@@ -516,21 +527,30 @@ def detect_county_from_text(text: str) -> str | None:
 def detect_fiscal_year(text: str) -> str | None:
     if not text:
         return None
-    patterns = [
+    # Patterns that directly yield "YYYY/YY" — use as-is
+    for pat in [
         r"financial\s+year\s+(20\d\d/\d\d)",
         r"fiscal\s+year\s+(20\d\d/\d\d)",
         r"(20\d\d/\d\d)\s+financial\s+year",
-        r"year\s+ended\s+30\s+june\s+(20\d\d)",
-        r"year\s+ended\s+june\s+30[,\s]+(20\d\d)",
-        r"(20\d\d)[–\-](20\d\d)\s+financial",
-    ]
-    for pat in patterns:
+    ]:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            raw = m.group(1)
-            if "/" not in raw:          # e.g. "2023" → "2023/24"
-                raw = f"{raw}/{str(int(raw) + 1)[2:]}"
-            return raw
+            return m.group(1)
+    # "year ended 30 June YYYY" — captured year is the END of the FY.
+    # Kenya FY runs July–June, so FY 2022/23 ends 30 June 2023 → subtract 1.
+    for pat in [
+        r"year\s+ended\s+30\s+june\s+(20\d\d)",
+        r"year\s+ended\s+june\s+30[,\s]+(20\d\d)",
+    ]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            end = int(m.group(1))
+            return f"{end - 1}/{str(end)[2:]}"
+    # "YYYY–YYYY financial" — first year is the START of the FY
+    m = re.search(r"(20\d\d)[–\-](20\d\d)\s+financial", text, re.IGNORECASE)
+    if m:
+        start = int(m.group(1))
+        return f"{start}/{str(start + 1)[2:]}"
     return None
 
 
@@ -548,17 +568,21 @@ def detect_source_from_text(text: str) -> str | None:
 
 
 def _parse_amount(raw: str) -> float | None:
-    """Parse a raw numeric string (with commas) into a KES-millions float."""
+    """Parse a raw numeric string (with commas) into a KES-millions float.
+
+    CoB/OAG PDFs express figures in one of two ways:
+      • Raw KES units — e.g. "3,456,789,012" or "234,000,000"
+      • Already in millions — e.g. "3,456.8" or "3,456"
+    Any value ≥ 1 million is treated as raw KES and divided by 1 M.
+    Values below 1 million are assumed to already be in millions.
+    """
     if not raw:
         return None
     cleaned = re.sub(r"[,\s]", "", raw)
     try:
         value = float(cleaned)
-        # CoB figures are typically already in millions; very large values are in KES units
-        if value > 1_000_000_000:
+        if value >= 1_000_000:
             value /= 1_000_000
-        elif value > 1_000_000:
-            value /= 1_000
         return value if value > 0 else None
     except ValueError:
         return None
@@ -692,6 +716,12 @@ def process_document_task(doc_id: int) -> None:
             doc.detected_title = title
             doc.text_content = text
 
+            if not text:
+                doc.processing_error = (
+                    "No text extracted — PDF appears to be scanned (image-only). "
+                    "Re-upload a text-based PDF or run OCR first."
+                )
+
             if text:
                 # Auto-fill county if not set
                 if not doc.county_id:
@@ -720,12 +750,18 @@ def process_document_task(doc_id: int) -> None:
                     for metric_name, patterns in METRIC_PATTERNS.items():
                         value, snippet = extract_metric(text, patterns)
                         if value:
+                            # Dedup per county+year+metric (not per document) so that
+                            # uploading multiple PDFs for the same county/year doesn't
+                            # create duplicate rows with conflicting values.
                             existing = FiscalMetric.query.filter_by(
-                                document_id=doc.id, metric_name=metric_name
+                                county_id=doc.county_id,
+                                fiscal_year=doc.fiscal_year,
+                                metric_name=metric_name,
                             ).first()
                             if existing:
                                 existing.metric_value = value
-                                existing.source_text = snippet
+                                existing.source_text  = snippet
+                                existing.document_id  = doc.id
                             else:
                                 db.session.add(FiscalMetric(
                                     document_id=doc.id,
@@ -737,18 +773,21 @@ def process_document_task(doc_id: int) -> None:
                                     confidence_score=0.75,
                                 ))
 
-                    # Extract audit opinion for OAG documents
-                    if doc.source == "OAG":
-                        opinion_type, observations = extract_audit_opinion(text)
-                        if opinion_type and not AuditOpinion.query.filter_by(document_id=doc.id).first():
-                            db.session.add(AuditOpinion(
-                                document_id=doc.id,
-                                county_id=doc.county_id,
-                                fiscal_year=doc.fiscal_year,
-                                opinion_type=opinion_type,
-                                material_issues=len(observations),
-                                key_observations=json.dumps(observations),
-                            ))
+                    # Extract audit opinion from any document that contains one —
+                    # not just OAG-tagged docs, since auto-detection sometimes
+                    # assigns the wrong source tag.
+                    opinion_type, observations = extract_audit_opinion(text)
+                    if opinion_type and not AuditOpinion.query.filter_by(
+                        county_id=doc.county_id, fiscal_year=doc.fiscal_year
+                    ).first():
+                        db.session.add(AuditOpinion(
+                            document_id=doc.id,
+                            county_id=doc.county_id,
+                            fiscal_year=doc.fiscal_year,
+                            opinion_type=opinion_type,
+                            material_issues=len(observations),
+                            key_observations=json.dumps(observations),
+                        ))
 
             doc.processing_status = "completed"
             doc.processing_completed_at = datetime.utcnow()
@@ -809,9 +848,10 @@ def dashboard():
     total_docs      = Document.query.count()
     counties_covered = (db.session.query(Document.county_id)
                         .filter(Document.county_id.isnot(None))
+                        .filter(Document.processing_status == "completed")
                         .distinct().count())
-    years_tracked   = (db.session.query(Document.fiscal_year)
-                        .filter(Document.fiscal_year.isnot(None))
+    years_tracked   = (db.session.query(FiscalMetric.fiscal_year)
+                        .filter(FiscalMetric.fiscal_year.isnot(None))
                         .distinct().count())
     completed_docs  = Document.query.filter_by(processing_status="completed").count()
 
@@ -819,9 +859,10 @@ def dashboard():
                    .order_by(Document.upload_date.desc())
                    .limit(8).all())
 
+    # Only counties that have at least one document — no empty rows on fresh install
     counties_ranked = (db.session.query(County,
                            db.func.count(Document.id).label("doc_count"))
-                       .outerjoin(Document)
+                       .join(Document, Document.county_id == County.id)
                        .group_by(County.id)
                        .order_by(db.desc("doc_count"))
                        .all())
@@ -1339,7 +1380,8 @@ def admin_reprocess(doc_id):
     FiscalMetric.query.filter_by(document_id=doc_id).delete()
     AuditOpinion.query.filter_by(document_id=doc_id).delete()
     doc.processing_status = "pending"
-    doc.text_content = None
+    doc.processing_error  = None
+    doc.text_content      = None
     db.session.commit()
     t = threading.Thread(target=process_document_task, args=(doc_id,), daemon=True)
     t.start()
@@ -1689,10 +1731,9 @@ def api_doc_status(doc_id):
 # === AI ENHANCEMENTS: shared Claude helper ===
 # ---------------------------------------------------------------------------
 
-def _call_claude(system_prompt: str, user_message: str, max_tokens: int = 900) -> str:
+def _call_claude(system_prompt: str, user_message: str, max_tokens: int = 2000) -> str:
     """Call Claude Opus 4.7 and return the response text. Raises on any error."""
-    client = anthropic.Anthropic(api_key=app.config["ANTHROPIC_API_KEY"])
-    resp = client.messages.create(
+    resp = _get_ai_client().messages.create(
         model="claude-opus-4-7",
         max_tokens=max_tokens,
         system=system_prompt,
@@ -1790,9 +1831,42 @@ def _build_dashboard_context() -> str:
     return "\n".join(lines)
 
 
-def _build_system_prompt(page: str, county_id, mode: str) -> str:
+def _build_doc_context(doc_id) -> str:
+    if not doc_id:
+        return ""
+    try:
+        doc_id = int(doc_id)
+    except (TypeError, ValueError):
+        return ""
+    doc = Document.query.get(doc_id)
+    if not doc:
+        return ""
+    lines = [
+        "ACTIVE DOCUMENT IN REVIEW:",
+        f"  Title: {doc.detected_title or doc.original_filename}",
+        f"  County: {doc.county_name or 'Unknown'}",
+        f"  Fiscal Year: {doc.fiscal_year or 'Unknown'}",
+        f"  Source: {doc.source or 'Unknown'}",
+        f"  Pages: {doc.page_count or 'Unknown'}",
+    ]
+    metrics = FiscalMetric.query.filter_by(document_id=doc_id).all()
+    if metrics:
+        lines.append("  Extracted metrics from this document:")
+        for m in metrics:
+            v = m.metric_value
+            fmt = f"KES {v/1000:.1f}B" if v and v >= 1000 else f"KES {v:.0f}M" if v else "—"
+            lines.append(f"    {m.metric_name}: {fmt}")
+    opinions = AuditOpinion.query.filter_by(document_id=doc_id).all()
+    if opinions:
+        for op in opinions:
+            lines.append(f"  Audit opinion: {op.opinion_type.upper()} ({op.material_issues} issues)")
+    return "\n".join(lines)
+
+
+def _build_system_prompt(page: str, county_id, mode: str, doc_id=None) -> str:
     county_ctx    = _build_county_context(county_id)
     dashboard_ctx = _build_dashboard_context()
+    doc_ctx       = _build_doc_context(doc_id)
     prompt = f"""You are FiscalOS AI — the built-in fiscal intelligence assistant for FinancialOS Kenya, \
 a platform used by banks, DFIs, investors, and analysts to analyse Kenyan county government finances.
 
@@ -1809,6 +1883,7 @@ USER ROLE: {getattr(current_user, 'role', 'viewer')}
 {dashboard_ctx}
 
 {county_ctx}
+{doc_ctx}
 
 CHART DIRECTIVES — embed one per response on its own line when a visual would help:
 [[CHART:revenue_trend]]         — revenue vs expenditure trend for the active county
@@ -1839,20 +1914,27 @@ def api_chat():
         return jsonify({"error": "ANTHROPIC_API_KEY not configured. Set it as an environment variable."}), 503
 
     body      = request.get_json(force=True)
-    messages  = body.get("messages", [])
     page      = body.get("page", "Dashboard")
     county_id = body.get("county_id")
+    doc_id    = body.get("doc_id")
     mode      = body.get("mode", "simple")
 
+    # Accept two payload shapes:
+    #   • messages: [{role, content}, …]  (review.js / correct format)
+    #   • message + history               (main.js legacy format)
+    messages = body.get("messages")
     if not messages:
-        return jsonify({"error": "No messages provided."}), 400
+        msg     = body.get("message", "").strip()
+        history = body.get("history", [])
+        if not msg:
+            return jsonify({"error": "No message provided."}), 400
+        messages = history + [{"role": "user", "content": msg}]
 
     try:
-        client   = anthropic.Anthropic(api_key=app.config["ANTHROPIC_API_KEY"])
-        response = client.messages.create(
+        response = _get_ai_client().messages.create(
             model="claude-opus-4-7",
-            max_tokens=1200,
-            system=_build_system_prompt(page, county_id, mode),
+            max_tokens=2000,
+            system=_build_system_prompt(page, county_id, mode, doc_id=doc_id),
             messages=[{"role": m["role"], "content": m["content"]} for m in messages[-20:]],
         )
         return jsonify({"reply": response.content[0].text})
@@ -1915,7 +1997,7 @@ def api_review_documents():
             "county_id":     d.county_id,
             "county_name":   d.county.name if d.county else "Unknown",
             "fiscal_year":   d.fiscal_year,
-            "source":        d.source_type,
+            "source":        d.source,
             "pages":         d.page_count,
             "upload_date":   d.upload_date.strftime("%d %b %Y") if d.upload_date else "",
         })
