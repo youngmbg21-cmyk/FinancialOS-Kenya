@@ -135,7 +135,13 @@ KENYA_COUNTIES = [
     (47, "Nairobi City",     "Nairobi"),
 ]
 
-FISCAL_YEARS = ["2019/20", "2020/21", "2021/22", "2022/23", "2023/24"]
+def _generate_fiscal_years(start: int = 2019) -> list[str]:
+    current_year = datetime.utcnow().year
+    # Kenya FY runs July–June; include one year ahead for upcoming budgets
+    end = current_year + 1
+    return [f"{y}/{str(y + 1)[-2:]}" for y in range(start, end)]
+
+FISCAL_YEARS = _generate_fiscal_years()
 
 SOURCES = [
     ("CoB",   "Controller of Budget"),
