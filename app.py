@@ -1309,6 +1309,7 @@ def admin_upload():
                 county_id = c.id
 
         saved = 0
+        doc_ids = []
         for f in files:
             if not f or not f.filename or not allowed_file(f.filename):
                 continue
@@ -1333,13 +1334,16 @@ def admin_upload():
                 processing_status="pending",
             )
             db.session.add(doc)
-            db.session.flush()         # populate doc.id before thread starts
-
-            t = threading.Thread(target=process_document_task, args=(doc.id,), daemon=True)
-            t.start()
+            db.session.flush()
+            doc_ids.append(doc.id)
             saved += 1
 
+        # Commit before starting threads so background sessions can see the rows
         db.session.commit()
+        for doc_id in doc_ids:
+            t = threading.Thread(target=process_document_task, args=(doc_id,), daemon=True)
+            t.start()
+
         if saved:
             flash(f"{saved} file(s) uploaded. Processing in background.", "success")
         else:
