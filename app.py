@@ -2164,9 +2164,9 @@ def _compute_data_health() -> dict:
     ).count()
 
     doc_types_count = (
-        db.session.query(Document.doc_type)
+        db.session.query(Document.document_type)
         .filter(Document.processing_status == "completed")
-        .filter(Document.doc_type.isnot(None))
+        .filter(Document.document_type.isnot(None))
         .distinct()
         .count()
     )
