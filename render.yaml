@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: financialos-kenya
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app -c gunicorn.conf.py
+    clientMaxBodySize: 100  # MB — allows large PDF uploads
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false
