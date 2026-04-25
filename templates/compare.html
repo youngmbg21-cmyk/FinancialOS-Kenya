@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}Compare Counties{% endblock %}
+{% block breadcrumb %}<span>Compare Counties</span>{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Compare Counties</h1>
+    <p class="page-sub">Side-by-side fiscal metrics for up to 4 counties</p>
+  </div>
+</div>
+
+<!-- Selectors -->
+<div class="card compare-controls">
+  <div class="compare-selectors">
+    {% for i in range(4) %}
+    <div class="form-group">
+      <label class="form-label">County {{ i+1 }}</label>
+      <select class="form-input county-pick" id="pick{{ i }}">
+        <option value="">— Select county —</option>
+        {% for c in all_counties %}
+        <option value="{{ c.id }}">{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="compare-row-2">
+    <div class="form-group" style="max-width:200px;">
+      <label class="form-label">Fiscal Year</label>
+      <select class="form-input" id="compareFY">
+        <option value="">Latest available</option>
+        {% for fy in fiscal_years %}
+        <option value="{{ fy }}">{{ fy }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn btn-primary" onclick="runCompare()">Compare</button>
+  </div>
+</div>
+
+<!-- Results -->
+<div id="compareResults" style="display:none; margin-top:1.5rem;">
+  <!-- Summary table -->
+  <div class="card">
+    <div class="card-head"><h2 class="card-title">Metrics Comparison</h2></div>
+    <div class="table-wrap">
+      <table class="data-table" id="compareTable">
+        <thead id="compareThead"></thead>
+        <tbody id="compareTbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Revenue chart -->
+  <div class="dash-grid" style="margin-top:1.5rem;">
+    <div class="card card-wide">
+      <div class="card-head"><h2 class="card-title">Revenue Comparison</h2></div>
+      <div class="chart-container" style="height:280px;">
+        <canvas id="compareRevChart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2 class="card-title">Development vs Recurrent</h2></div>
+      <div class="chart-container" style="height:280px;">
+        <canvas id="compareDevChart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- === AI ENHANCEMENT 3: Compare AI Narrative === -->
+<div id="compareAICard" style="display:none;margin-top:1.5rem;" class="card ai-card">
+  <div class="card-head">
+    <h2 class="card-title">AI Analyst Note</h2>
+    <button class="btn btn-sm btn-primary" id="compareAIBtn" onclick="loadCompareAI()">Generate</button>
+  </div>
+  <div id="compareAIPanel" class="ai-panel">
+    <p class="ai-placeholder">Click Generate for a Claude-authored analyst note comparing these counties.</p>
+  </div>
+</div>
+
+<div id="compareEmpty" class="empty-state-lg">
+  Select at least 2 counties and click Compare.
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let revChart = null, devChart = null;
+const COLORS = ['#4f8ef7','#00c896','#f5a623','#ff4d6a'];
+const METRIC_LABELS = {
+  total_revenue:'Total Revenue', own_source_revenue:'Own-Source Revenue',
+  equitable_share:'Equitable Share', total_expenditure:'Total Expenditure',
+  recurrent_expenditure:'Recurrent Expenditure',
+  development_expenditure:'Development Expenditure',
+  pending_bills:'Pending Bills', staff_costs:'Staff Costs',
+};
+
+function fmtM(v) {
+  if (!v && v !== 0) return '—';
+  return v >= 1000 ? `KES ${(v/1000).toFixed(1)}B` : `KES ${v.toFixed(0)}M`;
+}
+
+function runCompare() {
+  const ids = [...document.querySelectorAll('.county-pick')]
+    .map(s => s.value).filter(Boolean);
+  if (ids.length < 2) { alert('Select at least 2 counties.'); return; }
+  const fy = document.getElementById('compareFY').value;
+  const qs = `counties=${ids.join(',')}&fiscal_year=${fy}`;
+
+  fetch(`/api/compare?${qs}`)
+    .then(r => r.json())
+    .then(data => {
+      if (!data.length) return;
+      document.getElementById('compareEmpty').style.display = 'none';
+      document.getElementById('compareResults').style.display = 'block';
+      // === AI ENHANCEMENT 3: show AI card, reset its state ===
+      document.getElementById('compareAICard').style.display = 'block';
+      document.getElementById('compareAIPanel').innerHTML =
+        '<p class="ai-placeholder">Click Generate for a Claude-authored analyst note comparing these counties.</p>';
+      document.getElementById('compareAIBtn').disabled = false;
+      window._lastCompareQS = qs;
+      renderTable(data);
+      renderCharts(data);
+    });
+}
+
+function renderTable(data) {
+  const thead = document.getElementById('compareThead');
+  const tbody = document.getElementById('compareTbody');
+  const auditLabels = {unqualified:'Clean',qualified:'Qualified',adverse:'Adverse',disclaimer:'Disclaimer'};
+  const auditClass  = {unqualified:'badge-success',qualified:'badge-warning',adverse:'badge-danger',disclaimer:'badge-critical'};
+
+  // === PHASE 1: score badge in column header ===
+  const RATING_CLASS = {Strong:'badge-success',Stable:'badge-info',Watch:'badge-warning',Weak:'badge-danger',Distressed:'badge-critical'};
+  thead.innerHTML = `<tr><th>Metric</th>${data.map((c,i)=>{
+    const scoreBadge = c.investment_score != null
+      ? ` <span class="badge ${RATING_CLASS[c.investment_rating]||'badge-neutral'}" style="font-size:9px;vertical-align:middle;">${c.investment_score}</span>`
+      : '';
+    return `<th class="text-right" style="color:${COLORS[i]}">${c.county_name}${scoreBadge}</th>`;
+  }).join('')}</tr>`;
+
+  const rows = Object.entries(METRIC_LABELS).map(([k,label]) =>
+    `<tr><td>${label}</td>${data.map(c=>`<td class="text-right mono">${fmtM(c.metrics[k])}</td>`).join('')}</tr>`
+  ).join('');
+
+  const auditRow = `<tr class="row-bold"><td>Latest Audit</td>${data.map(c=>{
+    const op = c.audit;
+    return `<td class="text-right">${op ? `<span class="badge ${auditClass[op]}">${auditLabels[op]}</span>` : '—'}</td>`;
+  }).join('')}</tr>`;
+
+  tbody.innerHTML = rows + auditRow;
+}
+
+function renderCharts(data) {
+  const labels = data.map(c => c.county_name);
+  if (revChart) revChart.destroy();
+  if (devChart) devChart.destroy();
+
+  const sharedOpts = {
+    responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{ labels:{ color:'#8b90a7', font:{size:11} } } },
+    scales:{
+      x:{ grid:{display:false}, ticks:{color:'#8b90a7'} },
+      y:{ grid:{color:'rgba(255,255,255,0.04)'}, ticks:{color:'#8b90a7',
+        callback: v => v>=1000 ? `${(v/1000).toFixed(1)}B` : `${v.toFixed(0)}M`} }
+    }
+  };
+
+  revChart = new Chart(document.getElementById('compareRevChart'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[
+        { label:'Total Revenue',     data:data.map(c=>c.metrics.total_revenue||0),     backgroundColor:COLORS, borderRadius:4 },
+        { label:'Own-Source Revenue',data:data.map(c=>c.metrics.own_source_revenue||0),backgroundColor:COLORS.map(c=>c+'88'), borderRadius:4 },
+      ]
+    },
+    options:{ ...sharedOpts, plugins:{...sharedOpts.plugins, legend:{labels:{color:'#8b90a7',font:{size:11}}}} }
+  });
+
+  devChart = new Chart(document.getElementById('compareDevChart'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[
+        { label:'Development', data:data.map(c=>c.metrics.development_expenditure||0), backgroundColor:'#00c896', borderRadius:4 },
+        { label:'Recurrent',   data:data.map(c=>c.metrics.recurrent_expenditure||0),   backgroundColor:'#f5a623', borderRadius:4 },
+      ]
+    },
+    options:sharedOpts
+  });
+}
+
+// === AI ENHANCEMENT 3: Compare AI Narrative ===
+function loadCompareAI() {
+  const panel = document.getElementById('compareAIPanel');
+  const btn   = document.getElementById('compareAIBtn');
+  panel.innerHTML = '<p class="ai-loading">Analysing counties…</p>';
+  btn.disabled = true;
+  fetch('/api/compare/ai-narrative?' + (window._lastCompareQS || ''))
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      if (d.error) { panel.innerHTML = `<p class="ai-error">${d.error}</p>`; return; }
+      const paras = d.narrative.split('\n\n').filter(Boolean)
+        .map(p => `<p class="ai-summary" style="margin-bottom:10px;">${p.trim()}</p>`).join('');
+      panel.innerHTML = paras;
+    })
+    .catch(() => { btn.disabled = false; panel.innerHTML = '<p class="ai-error">Request failed.</p>'; });
+}
+</script>
+{% endblock %}

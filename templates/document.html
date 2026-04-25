@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.original_filename | truncate(40) }}{% endblock %}
+{% block breadcrumb %}
+  <a href="{{ url_for('library') }}">Library</a>
+  <span class="bc-sep">›</span>
+  <span>{{ doc.original_filename | truncate(35) }}</span>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">{{ doc.original_filename }}</h1>
+    <p class="page-sub">
+      <span class="src-badge src-{{ doc.source | lower }}">{{ doc.source }}</span>
+      {% if doc.county %}<a href="{{ url_for('county_detail', county_id=doc.county_id) }}">{{ doc.county_name }}</a>{% else %}{{ doc.county_name or 'Unknown county' }}{% endif %}
+      · {{ doc.fiscal_year or '—' }} · {{ doc.report_period or '—' }}
+    </p>
+  </div>
+  <div class="header-actions">
+    {% if doc.filepath %}
+    <a href="{{ url_for('document_download', doc_id=doc.id) }}" class="btn btn-primary btn-sm">Download PDF</a>
+    {% endif %}
+    {% if current_user.can_upload() %}
+    <button class="btn btn-outline btn-sm" onclick="reprocess({{ doc.id }})">Reprocess</button>
+    <form method="POST" action="{{ url_for('admin_delete', doc_id=doc.id) }}" style="display:inline"
+          onsubmit="return confirm('Permanently delete this document?')">
+      <button class="btn btn-danger btn-sm" type="submit">Delete</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="doc-grid">
+  <!-- Metadata card -->
+  <div class="card">
+    <div class="card-head"><h2 class="card-title">Document Metadata</h2></div>
+    <dl class="meta-list">
+      <dt>Source</dt>          <dd>{{ doc.source or '—' }}</dd>
+      <dt>County</dt>          <dd>{{ doc.county_name or '—' }}</dd>
+      <dt>Fiscal Year</dt>     <dd>{{ doc.fiscal_year or '—' }}</dd>
+      <dt>Report Period</dt>   <dd>{{ doc.report_period or '—' }}</dd>
+      <dt>Document Type</dt>   <dd>{{ doc.document_type or '—' }}</dd>
+      <dt>Pages</dt>           <dd>{{ doc.page_count or '—' }}</dd>
+      <dt>File Size</dt>       <dd>{{ doc.file_size | filesize }}</dd>
+      <dt>Upload Date</dt>     <dd>{{ doc.upload_date.strftime('%d %b %Y %H:%M') if doc.upload_date else '—' }}</dd>
+      <dt>Uploaded By</dt>     <dd>{{ doc.uploaded_by.username if doc.uploaded_by else '—' }}</dd>
+      <dt>Processing</dt>      <dd><span class="status-pill {{ doc.processing_status | status_class }}">{{ doc.processing_status | title }}</span></dd>
+      {% if doc.detected_title %}
+      <dt>Detected Title</dt>  <dd>{{ doc.detected_title }}</dd>
+      {% endif %}
+      {% if doc.notes %}
+      <dt>Notes</dt>           <dd>{{ doc.notes }}</dd>
+      {% endif %}
+    </dl>
+    {% if doc.processing_error %}
+    <div class="error-box">
+      <strong>Processing error:</strong> {{ doc.processing_error }}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Extracted metrics -->
+  <div class="card">
+    <div class="card-head">
+      <h2 class="card-title">Extracted Metrics</h2>
+      <span class="card-meta">{{ metrics | length }} metric{{ 's' if metrics | length != 1 }}</span>
+    </div>
+    {% if metrics %}
+    <dl class="meta-list">
+      {% set metric_labels = {
+        'total_revenue':'Total Revenue', 'own_source_revenue':'Own-Source Revenue',
+        'equitable_share':'Equitable Share', 'total_expenditure':'Total Expenditure',
+        'recurrent_expenditure':'Recurrent Expenditure',
+        'development_expenditure':'Development Expenditure',
+        'pending_bills':'Pending Bills', 'staff_costs':'Staff Costs'
+      } %}
+      {% for m in metrics %}
+      <dt>{{ metric_labels.get(m.metric_name, m.metric_name | replace('_',' ') | title }}</dt>
+      <dd>
+        {{ m.metric_value | fmt_millions }}
+        <span class="confidence-tag">{{ (m.confidence_score * 100) | int }}% conf.</span>
+      </dd>
+      {% endfor %}
+    </dl>
+    {% else %}
+    <p class="empty-state">No metrics extracted yet.
+      {% if doc.processing_status == 'completed' %}
+      Extraction patterns found no matching figures in this document.
+      {% elif doc.processing_status == 'pending' %}
+      Document is queued for processing.
+      {% endif %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Audit opinions -->
+{% if audit_opinions %}
+<div class="card" style="margin-top:1.5rem;">
+  <div class="card-head"><h2 class="card-title">Audit Opinions</h2></div>
+  {% for op in audit_opinions %}
+  <div class="audit-row">
+    <div class="audit-year">{{ op.fiscal_year }}</div>
+    <span class="badge {{ op.opinion_type | opinion_class }}">{{ op.opinion_type | opinion_label }}</span>
+    <span class="audit-issues">{{ op.material_issues }} material issue{{ 's' if op.material_issues != 1 }}</span>
+    {% if op.pending_bills %}<span class="audit-bills">Pending bills: {{ op.pending_bills | fmt_millions }}</span>{% endif %}
+    <div class="audit-observations">
+      {% for obs in op.observations_list() %}
+      <p class="obs-item">{{ obs }}</p>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function reprocess(docId) {
+  if (!confirm('Re-extract all data from this PDF?')) return;
+  fetch(`/admin/reprocess/${docId}`, { method: 'POST' })
+    .then(r => r.json())
+    .then(() => location.reload())
+    .catch(() => alert('Reprocess request failed.'));
+}
+</script>
+{% endblock %}

@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+
+{% block title %}Document Review{% endblock %}
+
+{% block breadcrumb %}
+<span><a href="{{ url_for('library') }}">Library</a></span>
+<span>›</span>
+<span>Document Review</span>
+{% endblock %}
+
+{% block head %}
+<!-- PDF.js from CDN -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs" type="module" id="pdfjsScript"></script>
+{% endblock %}
+
+{% block content %}
+<div class="review-layout">
+
+  <!-- ══════════════ LEFT: document selector panel ══════════════ -->
+  <aside class="review-docs-panel" id="reviewDocsPanel">
+
+    <div class="review-panel-header">
+      <span class="review-panel-title">Documents</span>
+      <button class="review-collapse-btn" id="docsCollapseBtn" onclick="reviewToggleDocs()" title="Collapse">‹</button>
+    </div>
+
+    <!-- Filters -->
+    <div class="review-filters">
+      <input class="review-search" id="reviewSearch" type="text" placeholder="Search documents…"
+             oninput="reviewFilter()">
+      <select class="review-select" id="reviewCountyFilter" onchange="reviewFilter()">
+        <option value="">All Counties</option>
+        {% for c in counties %}
+        <option value="{{ c.id }}">{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Document list -->
+    <div class="review-doc-list" id="reviewDocList">
+      {% for doc in documents %}
+      <div class="review-doc-item"
+           data-doc-id="{{ doc.id }}"
+           data-county-id="{{ doc.county_id or '' }}"
+           data-title="{{ (doc.detected_title or doc.original_filename) | lower }}"
+           onclick="reviewLoadDoc({{ doc.id }}, '{{ (doc.detected_title or doc.original_filename) | e }}')">
+        <div class="review-doc-icon">
+          <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
+        </div>
+        <div class="review-doc-meta">
+          <div class="review-doc-name">{{ doc.detected_title or doc.original_filename }}</div>
+          <div class="review-doc-sub">
+            {{ doc.county.name if doc.county else 'Unknown' }}
+            {% if doc.fiscal_year %} · {{ doc.fiscal_year }}{% endif %}
+            {% if doc.page_count %} · {{ doc.page_count }}pp{% endif %}
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <div class="review-empty">
+        <p>No processed documents yet.</p>
+        <a href="{{ url_for('admin_upload') }}">Upload documents →</a>
+      </div>
+      {% endfor %}
+    </div>
+
+  </aside>
+
+  <!-- ══════════════ MIDDLE: PDF viewer ══════════════ -->
+  <section class="review-viewer-panel" id="reviewViewerPanel">
+
+    <!-- Viewer toolbar -->
+    <div class="review-viewer-toolbar">
+      <div class="review-viewer-title" id="viewerDocTitle">Select a document</div>
+      <div class="review-viewer-controls">
+        <button class="review-ctrl-btn" onclick="reviewPrevPage()" title="Previous page">‹</button>
+        <span class="review-page-info">
+          Page <span id="viewerPageNum">—</span> of <span id="viewerPageCount">—</span>
+        </span>
+        <button class="review-ctrl-btn" onclick="reviewNextPage()" title="Next page">›</button>
+        <button class="review-ctrl-btn" onclick="reviewZoomOut()" title="Zoom out">−</button>
+        <span class="review-zoom-label" id="viewerZoom">100%</span>
+        <button class="review-ctrl-btn" onclick="reviewZoomIn()" title="Zoom in">+</button>
+        <button class="review-ctrl-btn" onclick="reviewFitWidth()" title="Fit width">⇔</button>
+      </div>
+    </div>
+
+    <!-- Canvas area -->
+    <div class="review-canvas-wrap" id="reviewCanvasWrap">
+      <div class="review-placeholder" id="reviewPlaceholder">
+        <svg viewBox="0 0 24 24" style="width:56px;height:56px;fill:var(--text-muted);opacity:.4;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13zm-4 8H7v-2h2v2zm6 0h-4v-2h4v2zm0-4H7v-2h8v2z"/></svg>
+        <p>Select a document from the list<br>or ask the AI to load one</p>
+      </div>
+      <canvas id="reviewCanvas" style="display:none;"></canvas>
+    </div>
+
+  </section>
+
+  <!-- ══════════════ RIGHT: chat panel ══════════════ -->
+  <aside class="review-chat-panel" id="reviewChatPanel">
+
+    <div class="review-panel-header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div class="chat-avatar" style="width:28px;height:28px;">
+          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        </div>
+        <span class="review-panel-title">FiscalOS AI</span>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <div class="chat-mode-toggle" style="transform:scale(0.85);transform-origin:right;">
+          <button class="chat-mode-btn active" id="rvModeSimple" onclick="rvSetMode('simple')">SIMPLE</button>
+          <button class="chat-mode-btn" id="rvModeExpert" onclick="rvSetMode('expert')">EXPERT</button>
+        </div>
+        <button class="review-ctrl-btn" onclick="rvClear()" title="Clear">CLR</button>
+      </div>
+    </div>
+
+    <!-- Active doc context pill -->
+    <div class="review-doc-context" id="rvDocContext" style="display:none;">
+      <svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:var(--accent);flex-shrink:0;"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
+      <span id="rvDocContextName">—</span>
+    </div>
+
+    <!-- Messages -->
+    <div class="review-chat-messages" id="rvMessages"></div>
+
+    <!-- Suggestions -->
+    <div class="review-chat-suggestions" id="rvSuggestions"></div>
+
+    <!-- Input -->
+    <div class="review-chat-input-wrap">
+      <textarea class="chat-input" id="rvInput" rows="2"
+        placeholder="Ask about the open document or any county…"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();rvSend();}"></textarea>
+      <button class="chat-send" id="rvSendBtn" onclick="rvSend()">
+        <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+      </button>
+    </div>
+
+  </aside>
+
+</div><!-- /review-layout -->
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/review.js') }}" type="module"></script>
+{% endblock %}

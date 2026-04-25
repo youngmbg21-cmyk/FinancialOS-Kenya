@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}Upload Documents{% endblock %}
+{% block breadcrumb %}<span>Upload Documents</span>{% endblock %}
+
+{% block head %}
+<style>
+.dz-file-list    { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow-y: auto; }
+.dz-file-item    { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--bg3); border-radius: var(--radius-sm); font-size: 12.5px; }
+.dz-fname        { flex: 1; color: var(--text1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dz-fsize        { color: var(--text3); flex-shrink: 0; font-size: 11px; }
+.dz-remove       { flex-shrink: 0; background: none; border: none; cursor: pointer; color: var(--text3); padding: 0 2px; font-size: 15px; line-height: 1; transition: color .15s; }
+.dz-remove:hover { color: #ef4444; }
+.dz-count        { margin-top: 8px; font-size: 12px; color: var(--purple); font-weight: 600; }
+.dz-over         { border-color: var(--purple) !important; background: rgba(168,85,247,.06) !important; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Upload Fiscal Documents</h1>
+    <p class="page-sub">Admin · PDF files only · Drag multiple batches or browse to accumulate files</p>
+  </div>
+</div>
+
+<div class="upload-grid">
+  <!-- Upload form -->
+  <div class="card upload-form-card">
+    <div class="card-head"><h2 class="card-title">New Upload</h2></div>
+    <form method="POST" enctype="multipart/form-data" id="uploadForm">
+
+      <!-- Drop zone -->
+      <div class="dropzone" id="dropzone">
+        <input type="file" name="files" id="fileInput" multiple accept=".pdf" hidden>
+        <svg viewBox="0 0 24 24" class="dz-icon"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+        <p class="dz-text">Drag &amp; drop PDF files here</p>
+        <p class="dz-sub">or <button type="button" class="dz-browse" onclick="document.getElementById('fileInput').click()">browse files</button> — you can add more files in multiple batches</p>
+        <div id="dzCount"></div>
+        <div class="dz-file-list" id="fileList"></div>
+      </div>
+
+      <!-- Metadata -->
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Source Organisation <span class="req">*</span></label>
+          <select class="form-input" name="source" required>
+            {% for code, label in sources %}
+            <option value="{{ code }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fiscal Year</label>
+          <select class="form-input" name="fiscal_year">
+            <option value="">— Auto-detect —</option>
+            {% for fy in fiscal_years %}
+            <option value="{{ fy }}">{{ fy }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">County</label>
+          <select class="form-input" name="county_name">
+            <option value="All Counties">All Counties / National</option>
+            {% for c in all_counties %}
+            <option value="{{ c.name }}">{{ c.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Report Period</label>
+          <select class="form-input" name="report_period">
+            {% for code, label in report_periods %}
+            <option value="{{ code }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group form-group-full">
+          <label class="form-label">Document Type</label>
+          <select class="form-input" name="document_type">
+            <option value="">— Select type —</option>
+            {% for dt in document_types %}
+            <option value="{{ dt }}">{{ dt }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group form-group-full">
+          <label class="form-label">Notes <span class="opt">(optional)</span></label>
+          <textarea class="form-input" name="notes" rows="2" placeholder="Additional context about this document…"></textarea>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary btn-lg" id="submitBtn" disabled>
+          <svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+          <span id="submitLabel">Upload &amp; Process</span>
+        </button>
+        <button type="button" class="btn btn-ghost" id="clearBtn" onclick="clearFiles()" style="display:none;">
+          Clear all
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Recent uploads queue -->
+  <div class="card">
+    <div class="card-head">
+      <h2 class="card-title">Recent Uploads</h2>
+      <span class="card-meta">{{ recent | length }} latest</span>
+    </div>
+    <div class="queue-list">
+      {% for doc in recent %}
+      <div class="queue-item" id="qi-{{ doc.id }}">
+        <div class="queue-src src-{{ doc.source | lower }}">{{ doc.source }}</div>
+        <div class="queue-body">
+          <span class="queue-name">{{ doc.original_filename | truncate(40) }}</span>
+          <span class="queue-meta">
+            {{ doc.county_name }} · {{ doc.fiscal_year or '—' }} ·
+            {{ doc.file_size | filesize }}
+          </span>
+        </div>
+        <span class="status-pill {{ doc.processing_status | status_class }}"
+              id="qs-{{ doc.id }}">
+          {{ doc.processing_status | title }}
+        </span>
+      </div>
+      {% else %}
+      <div class="empty-state">No documents uploaded yet.</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── File accumulator ─────────────────────────────────────────────────────
+// We accumulate File objects across multiple drag/browse sessions so the user
+// can add files in batches. Before submit we sync them to the input element.
+let accumulated = [];   // array of File objects
+
+const dz      = document.getElementById('dropzone');
+const fi      = document.getElementById('fileInput');
+const fl      = document.getElementById('fileList');
+const dzCount = document.getElementById('dzCount');
+const submitBtn  = document.getElementById('submitBtn');
+const submitLbl  = document.getElementById('submitLabel');
+const clearBtn   = document.getElementById('clearBtn');
+
+// ── Drag events ──────────────────────────────────────────────────────────
+dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('dz-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('dz-over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.classList.remove('dz-over');
+  addFiles(Array.from(e.dataTransfer.files));
+});
+
+// ── Browse dialog ────────────────────────────────────────────────────────
+fi.addEventListener('change', () => {
+  addFiles(Array.from(fi.files));
+  fi.value = '';   // reset so same file can be re-added after removal
+});
+
+// ── Accumulate, dedup, render ────────────────────────────────────────────
+function addFiles(newFiles) {
+  const existing = new Set(accumulated.map(f => f.name + f.size));
+  newFiles.forEach(f => {
+    if (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')) {
+      if (!existing.has(f.name + f.size)) {
+        accumulated.push(f);
+        existing.add(f.name + f.size);
+      }
+    }
+  });
+  syncAndRender();
+}
+
+function removeFile(idx) {
+  accumulated.splice(idx, 1);
+  syncAndRender();
+}
+
+function clearFiles() {
+  accumulated = [];
+  syncAndRender();
+}
+
+function syncAndRender() {
+  // Sync array → input.files via DataTransfer
+  const dt = new DataTransfer();
+  accumulated.forEach(f => dt.items.add(f));
+  fi.files = dt.files;
+
+  // Render list
+  fl.innerHTML = '';
+  accumulated.forEach((f, i) => {
+    const size = f.size > 1048576
+      ? `${(f.size / 1048576).toFixed(1)} MB`
+      : `${(f.size / 1024).toFixed(0)} KB`;
+    const row = document.createElement('div');
+    row.className = 'dz-file-item';
+    row.innerHTML = `
+      <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:#a855f7;flex-shrink:0;"><path d="M20 2H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 10H10V6h8v6zM4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6z"/></svg>
+      <span class="dz-fname">${escHtml(f.name)}</span>
+      <span class="dz-fsize">${size}</span>
+      <button type="button" class="dz-remove" onclick="removeFile(${i})" title="Remove">×</button>`;
+    fl.appendChild(row);
+  });
+
+  // Count badge
+  const n = accumulated.length;
+  dzCount.innerHTML = n > 0
+    ? `<div class="dz-count">${n} file${n > 1 ? 's' : ''} queued</div>`
+    : '';
+
+  // Submit button state
+  submitBtn.disabled = n === 0;
+  submitLbl.textContent = n > 0
+    ? `Upload & Process ${n} file${n > 1 ? 's' : ''}`
+    : 'Upload & Process';
+  clearBtn.style.display = n > 0 ? '' : 'none';
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Poll processing status for pending items ─────────────────────────────
+const pendingIds = [{% for doc in recent %}{% if doc.processing_status in ('pending','processing') %}{{ doc.id }},{% endif %}{% endfor %}];
+pendingIds.forEach(id => pollStatus(id));
+
+function pollStatus(id) {
+  const pill = document.getElementById('qs-' + id);
+  if (!pill) return;
+  const timer = setInterval(() => {
+    fetch(`/api/document/${id}/status`)
+      .then(r => r.json())
+      .then(d => {
+        pill.textContent = d.status.charAt(0).toUpperCase() + d.status.slice(1);
+        pill.className = 'status-pill status-' + d.status;
+        if (d.status === 'completed' || d.status === 'failed') clearInterval(timer);
+      })
+      .catch(() => clearInterval(timer));
+  }, 3000);
+}
+</script>
+{% endblock %}
