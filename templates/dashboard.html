@@ -90,8 +90,6 @@
         </thead>
         <tbody id="rankingsBody">
           {% for county, doc_count in counties_ranked[:20] %}
-          {% set latest_m = namespace(val=None, yr=None) %}
-          {% set latest_a = namespace(op=None, yr=None) %}
           <tr>
             <td class="rank-num">{{ loop.index }}</td>
             <td class="county-name-cell">
@@ -107,6 +105,17 @@
             </td>
             <td>
               <a href="{{ url_for('county_detail', county_id=county.id) }}" class="tbl-action">View →</a>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7">
+              <div class="empty-state" style="padding:32px 0;">
+                No documents uploaded yet.
+                {% if current_user.is_authenticated and current_user.can_upload() %}
+                <a href="{{ url_for('admin_upload') }}" style="margin-left:8px;">Upload PDFs →</a>
+                {% endif %}
+              </div>
             </td>
           </tr>
           {% endfor %}
