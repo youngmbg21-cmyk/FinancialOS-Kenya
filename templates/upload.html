@@ -231,15 +231,24 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
   progressTxt.className = 'upload-progress-text';
   progressTxt.textContent = 'Starting upload…';
 
-  const formData = new FormData(this);
+  // Build FormData manually from accumulated File objects so we never
+  // depend on the fi.files = DataTransfer assignment (unreliable cross-browser)
+  const form = this;
+  const formData = new FormData();
+  ['source','fiscal_year','county_name','report_period','document_type','notes'].forEach(name => {
+    const el = form.elements[name];
+    if (el) formData.append(name, el.value);
+  });
+  accumulated.forEach(f => formData.append('files', f));
+
   const xhr = new XMLHttpRequest();
   let startTime = Date.now();
 
   xhr.upload.addEventListener('progress', function(e) {
     if (!e.lengthComputable) return;
-    const pct     = Math.round(e.loaded / e.total * 100);
-    const elapsed = (Date.now() - startTime) / 1000;
-    const speed   = e.loaded / elapsed;                        // bytes/s
+    const pct       = Math.round(e.loaded / e.total * 100);
+    const elapsed   = (Date.now() - startTime) / 1000;
+    const speed     = e.loaded / elapsed;
     const remaining = (e.total - e.loaded) / speed;
     const mbLoaded  = (e.loaded / 1048576).toFixed(1);
     const mbTotal   = (e.total  / 1048576).toFixed(1);
@@ -252,9 +261,17 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
 
   xhr.addEventListener('load', function() {
     uploading = false;
-    progressBar.style.width = '100%';
-    progressTxt.textContent = 'Upload complete — redirecting…';
-    window.location.href = xhr.responseURL || '/admin/upload';
+    if (xhr.status >= 200 && xhr.status < 400) {
+      progressBar.style.width = '100%';
+      progressTxt.textContent = 'Upload complete — redirecting…';
+      window.location.href = xhr.responseURL || '/admin/upload';
+    } else {
+      progressBar.style.background = '#ef4444';
+      progressTxt.className = 'upload-progress-text upload-progress-error';
+      progressTxt.textContent = `Upload failed (${xhr.status} error) — please try again.`;
+      submitBtn.disabled = false;
+      clearBtn.style.display = '';
+    }
   });
 
   xhr.addEventListener('error', function() {
