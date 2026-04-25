@@ -256,6 +256,7 @@ class Document(db.Model):
 
     # Processing lifecycle
     processing_status       = db.Column(db.String(20), default="pending")
+    processing_page         = db.Column(db.Integer, default=0)  # live page counter
     processing_error        = db.Column(db.Text)
     processing_completed_at = db.Column(db.DateTime)
 
@@ -502,17 +503,24 @@ def allowed_file(filename: str) -> bool:
     )
 
 
-def extract_pdf_metadata(filepath: str):
-    """Return (page_count, detected_title, full_text) from a PDF file."""
+def extract_pdf_metadata(filepath: str, progress_cb=None):
+    """Return (page_count, detected_title, full_text) from a PDF file.
+
+    progress_cb(current, total) is called every 10 pages during extraction
+    so callers can persist live progress without hammering the database.
+    """
     if not PDF_AVAILABLE or not filepath or not os.path.exists(filepath):
         return None, None, None
     try:
         with pdfplumber.open(filepath) as pdf:
             page_count = len(pdf.pages)
-            # Read all pages in one pass — combined CoB reports cover all 47
-            # counties sequentially and can exceed 500 pages; a cap would miss
-            # county data that starts deep in the document
-            parts = [page.extract_text() or "" for page in pdf.pages]
+            parts = []
+            for i, page in enumerate(pdf.pages, 1):
+                parts.append(page.extract_text() or "")
+                if progress_cb and i % 10 == 0:
+                    progress_cb(i, page_count)
+            if progress_cb:
+                progress_cb(page_count, page_count)
             full_text = "\n".join(parts)
             title = _detect_title(full_text[:4000])
             return page_count, title, full_text
@@ -745,9 +753,15 @@ def process_document_task(doc_id: int) -> None:
             return
         try:
             doc.processing_status = "processing"
+            doc.processing_page   = 0
             db.session.commit()
 
-            page_count, title, text = extract_pdf_metadata(doc.filepath)
+            def _progress(current, total):
+                doc.processing_page = current
+                doc.page_count      = total
+                db.session.commit()
+
+            page_count, title, text = extract_pdf_metadata(doc.filepath, progress_cb=_progress)
             doc.page_count = page_count
             doc.detected_title = title
             doc.text_content = text
@@ -1759,11 +1773,12 @@ def api_export_csv():
 def api_doc_status(doc_id):
     doc = Document.query.get_or_404(doc_id)
     return jsonify({
-        "id":     doc.id,
-        "status": doc.processing_status,
-        "error":  doc.processing_error,
-        "pages":  doc.page_count,
-        "title":  doc.detected_title,
+        "id":           doc.id,
+        "status":       doc.processing_status,
+        "error":        doc.processing_error,
+        "current_page": doc.processing_page or 0,
+        "total_pages":  doc.page_count or 0,
+        "title":        doc.detected_title,
     })
 
 

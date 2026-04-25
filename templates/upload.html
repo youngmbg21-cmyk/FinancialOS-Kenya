@@ -17,6 +17,10 @@
 .upload-progress-bar     { height: 100%; width: 0%; background: var(--purple); border-radius: 999px; transition: width .3s ease; }
 .upload-progress-text    { margin-top: 6px; font-size: 12.5px; color: var(--text2); }
 .upload-progress-error   { color: #ef4444; }
+.queue-pg-wrap  { margin-top: 5px; }
+.queue-pg-bg    { background: var(--bg3); border-radius: 999px; height: 5px; overflow: hidden; }
+.queue-pg-bar   { height: 100%; width: 0%; background: var(--purple); border-radius: 999px; transition: width .5s ease; }
+.queue-pg-text  { font-size: 11px; color: var(--text3); margin-top: 2px; display: block; }
 </style>
 {% endblock %}
 
@@ -130,6 +134,16 @@
             {{ doc.county_name }} · {{ doc.fiscal_year or '—' }} ·
             {{ doc.file_size | filesize }}
           </span>
+          <div class="queue-pg-wrap" id="qpw-{{ doc.id }}"
+               style="display:{% if doc.processing_status == 'processing' %}block{% else %}none{% endif %};">
+            <div class="queue-pg-bg">
+              <div class="queue-pg-bar" id="qpb-{{ doc.id }}"
+                   style="width:{% if doc.page_count and doc.processing_page %}{{ ((doc.processing_page / doc.page_count) * 100)|int }}{% else %}0{% endif %}%;"></div>
+            </div>
+            <span class="queue-pg-text" id="qpt-{{ doc.id }}">
+              Reading page {{ doc.processing_page or 0 }}{% if doc.page_count %} / {{ doc.page_count }}{% endif %}…
+            </span>
+          </div>
         </div>
         <span class="status-pill {{ doc.processing_status | status_class }}"
               id="qs-{{ doc.id }}">
@@ -309,14 +323,27 @@ const pendingIds = [{% for doc in recent %}{% if doc.processing_status in ('pend
 pendingIds.forEach(id => pollStatus(id));
 
 function pollStatus(id) {
-  const pill = document.getElementById('qs-' + id);
+  const pill    = document.getElementById('qs-'  + id);
+  const pgWrap  = document.getElementById('qpw-' + id);
+  const pgBar   = document.getElementById('qpb-' + id);
+  const pgText  = document.getElementById('qpt-' + id);
   if (!pill) return;
   const timer = setInterval(() => {
     fetch(`/api/document/${id}/status`)
       .then(r => r.json())
       .then(d => {
         pill.textContent = d.status.charAt(0).toUpperCase() + d.status.slice(1);
-        pill.className = 'status-pill status-' + d.status;
+        pill.className   = 'status-pill status-' + d.status;
+
+        if (d.status === 'processing' && d.total_pages > 0) {
+          const pct = Math.round(d.current_page / d.total_pages * 100);
+          if (pgWrap) pgWrap.style.display = 'block';
+          if (pgBar)  pgBar.style.width    = pct + '%';
+          if (pgText) pgText.textContent   = `Reading page ${d.current_page} / ${d.total_pages} (${pct}%)`;
+        } else {
+          if (pgWrap) pgWrap.style.display = 'none';
+        }
+
         if (d.status === 'completed' || d.status === 'failed') clearInterval(timer);
       })
       .catch(() => clearInterval(timer));
