@@ -1443,6 +1443,182 @@ def admin_reprocess(doc_id):
 
 
 # ---------------------------------------------------------------------------
+# Admin — export extracted data / import from snapshot
+# ---------------------------------------------------------------------------
+
+@app.route("/admin/export")
+@login_required
+@admin_required
+def admin_export():
+    """Download all extracted metrics, opinions and document metadata as JSON."""
+    # Build county id→name lookup
+    county_map = {c.id: c.name for c in County.query.all()}
+
+    documents = []
+    for doc in Document.query.order_by(Document.upload_date).all():
+        documents.append({
+            "original_filename": doc.original_filename,
+            "source":            doc.source,
+            "fiscal_year":       doc.fiscal_year,
+            "county_name":       doc.county_name,
+            "report_period":     doc.report_period,
+            "document_type":     doc.document_type,
+            "notes":             doc.notes,
+            "page_count":        doc.page_count,
+            "file_size":         doc.file_size,
+            "detected_title":    doc.detected_title,
+            "upload_date":       doc.upload_date.isoformat() if doc.upload_date else None,
+            "processing_status": doc.processing_status,
+        })
+
+    metrics = []
+    for m in FiscalMetric.query.all():
+        metrics.append({
+            "county_name":     county_map.get(m.county_id, ""),
+            "fiscal_year":     m.fiscal_year,
+            "metric_name":     m.metric_name,
+            "metric_value":    m.metric_value,
+            "currency":        m.currency,
+            "unit":            m.unit,
+            "confidence_score":m.confidence_score,
+            "source_text":     m.source_text,
+        })
+
+    opinions = []
+    for op in AuditOpinion.query.all():
+        opinions.append({
+            "county_name":      county_map.get(op.county_id, ""),
+            "fiscal_year":      op.fiscal_year,
+            "opinion_type":     op.opinion_type,
+            "material_issues":  op.material_issues,
+            "key_observations": op.key_observations,
+        })
+
+    snapshot = {
+        "exported_at": datetime.utcnow().isoformat(),
+        "version":     "1",
+        "documents":   documents,
+        "metrics":     metrics,
+        "opinions":    opinions,
+    }
+    buf = io.BytesIO(json.dumps(snapshot, indent=2).encode("utf-8"))
+    filename = f"financialos_snapshot_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+    return send_file(buf, mimetype="application/json",
+                     as_attachment=True, download_name=filename)
+
+
+@app.route("/admin/import", methods=["POST"])
+@login_required
+@admin_required
+def admin_import():
+    """Restore metrics, opinions and document stubs from a previously exported snapshot."""
+    f = request.files.get("snapshot")
+    if not f or not f.filename.endswith(".json"):
+        flash("Please upload a valid .json snapshot file.", "error")
+        return redirect(url_for("admin_upload"))
+
+    try:
+        data = json.loads(f.read().decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        flash("Could not parse the snapshot file — make sure it was exported from this app.", "error")
+        return redirect(url_for("admin_upload"))
+
+    if data.get("version") != "1":
+        flash("Unsupported snapshot version.", "error")
+        return redirect(url_for("admin_upload"))
+
+    # Build county name→id lookup
+    county_lookup = {c.name: c.id for c in County.query.all()}
+
+    docs_added = metrics_added = metrics_updated = opinions_added = 0
+
+    # Restore document stubs (metadata only — no PDF file)
+    for d in data.get("documents", []):
+        exists = Document.query.filter_by(
+            original_filename=d["original_filename"],
+            fiscal_year=d.get("fiscal_year"),
+            county_name=d.get("county_name"),
+        ).first()
+        if not exists:
+            county_id = county_lookup.get(d.get("county_name", ""))
+            db.session.add(Document(
+                original_filename=d.get("original_filename"),
+                stored_filename=None,
+                filepath=None,
+                source=d.get("source"),
+                fiscal_year=d.get("fiscal_year"),
+                county_id=county_id,
+                county_name=d.get("county_name"),
+                report_period=d.get("report_period"),
+                document_type=d.get("document_type"),
+                notes=d.get("notes"),
+                page_count=d.get("page_count"),
+                file_size=d.get("file_size"),
+                detected_title=d.get("detected_title"),
+                processing_status="completed",
+            ))
+            docs_added += 1
+
+    db.session.flush()
+
+    # Restore fiscal metrics
+    for m in data.get("metrics", []):
+        county_id = county_lookup.get(m.get("county_name", ""))
+        if not county_id or not m.get("fiscal_year") or not m.get("metric_name"):
+            continue
+        existing = FiscalMetric.query.filter_by(
+            county_id=county_id,
+            fiscal_year=m["fiscal_year"],
+            metric_name=m["metric_name"],
+        ).first()
+        if existing:
+            existing.metric_value    = m.get("metric_value", existing.metric_value)
+            existing.confidence_score= m.get("confidence_score", existing.confidence_score)
+            existing.source_text     = m.get("source_text", existing.source_text)
+            metrics_updated += 1
+        else:
+            db.session.add(FiscalMetric(
+                county_id=county_id,
+                fiscal_year=m["fiscal_year"],
+                metric_name=m["metric_name"],
+                metric_value=m.get("metric_value"),
+                currency=m.get("currency", "KES"),
+                unit=m.get("unit", "millions"),
+                confidence_score=m.get("confidence_score", 0.75),
+                source_text=m.get("source_text"),
+            ))
+            metrics_added += 1
+
+    # Restore audit opinions
+    for op in data.get("opinions", []):
+        county_id = county_lookup.get(op.get("county_name", ""))
+        if not county_id or not op.get("fiscal_year"):
+            continue
+        exists = AuditOpinion.query.filter_by(
+            county_id=county_id,
+            fiscal_year=op["fiscal_year"],
+        ).first()
+        if not exists:
+            db.session.add(AuditOpinion(
+                county_id=county_id,
+                fiscal_year=op["fiscal_year"],
+                opinion_type=op.get("opinion_type"),
+                material_issues=op.get("material_issues", 0),
+                key_observations=op.get("key_observations"),
+            ))
+            opinions_added += 1
+
+    db.session.commit()
+    flash(
+        f"Snapshot imported — {docs_added} documents, "
+        f"{metrics_added} new metrics ({metrics_updated} updated), "
+        f"{opinions_added} audit opinions restored.",
+        "success",
+    )
+    return redirect(url_for("admin_upload"))
+
+
+# ---------------------------------------------------------------------------
 # API — dashboard stats
 # ---------------------------------------------------------------------------
 

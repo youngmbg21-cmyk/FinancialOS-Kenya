@@ -156,6 +156,42 @@
     </div>
   </div>
 </div>
+
+<!-- Data Snapshot panel -->
+<div class="card" style="margin-top:24px;">
+  <div class="card-head">
+    <h2 class="card-title">Data Snapshot</h2>
+    <span class="card-meta">Backup &amp; restore extracted metrics</span>
+  </div>
+  <div style="padding:16px 20px;display:flex;gap:32px;flex-wrap:wrap;align-items:flex-start;">
+
+    <div style="flex:1;min-width:220px;">
+      <p style="font-size:13px;color:var(--text2);margin:0 0 12px;">
+        Download everything the app has extracted — all fiscal metrics, audit opinions,
+        and document records — as a single JSON file. Re-upload it any time to restore
+        the data without reprocessing the original PDFs.
+      </p>
+      <a href="{{ url_for('admin_export') }}" class="btn btn-primary">
+        <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:currentColor;vertical-align:middle;margin-right:5px;"><path d="M5 20h14v-2H5v2zm7-18L5.33 9h4.84v6h3.66V9h4.84L12 2z"/></svg>
+        Export Snapshot
+      </a>
+    </div>
+
+    <div style="flex:1;min-width:220px;">
+      <p style="font-size:13px;color:var(--text2);margin:0 0 12px;">
+        Restore from a previously exported snapshot. Existing records are kept;
+        only missing metrics and opinions are added. Duplicate documents are skipped.
+      </p>
+      <form method="POST" action="{{ url_for('admin_import') }}" enctype="multipart/form-data"
+            style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input type="file" name="snapshot" accept=".json" required
+               style="font-size:13px;color:var(--text2);">
+        <button type="submit" class="btn btn-ghost">Import Snapshot</button>
+      </form>
+    </div>
+
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
