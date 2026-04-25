@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block breadcrumb %}<span>Dashboard</span>{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Fiscal Intelligence Dashboard</h1>
+    <p class="page-sub">Kenya · 47 Counties · Real-time document analytics</p>
+  </div>
+  <div class="header-actions">
+    <select class="select-sm" id="yearFilter" onchange="applyYearFilter(this.value)">
+      <option value="">All fiscal years</option>
+      {% for fy in fiscal_years %}
+      <option value="{{ fy }}">FY {{ fy }}</option>
+      {% endfor %}
+    </select>
+    {% if current_user.can_export() %}
+    <a href="/api/export/csv" class="btn btn-outline btn-sm">
+      <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      Export CSV
+    </a>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── KPI strip ─────────────────────────────────────────────────── -->
+<div class="kpi-grid">
+  <div class="kpi-card">
+    <div class="kpi-icon kpi-blue">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>
+    </div>
+    <div class="kpi-body">
+      <span class="kpi-value">{{ total_docs }}</span>
+      <span class="kpi-label">Total Documents</span>
+    </div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-icon kpi-cyan">
+      <svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+    </div>
+    <div class="kpi-body">
+      <span class="kpi-value">{{ counties_covered }}<span class="kpi-unit">/47</span></span>
+      <span class="kpi-label">Counties Covered</span>
+    </div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-icon kpi-purple">
+      <svg viewBox="0 0 24 24"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></svg>
+    </div>
+    <div class="kpi-body">
+      <span class="kpi-value">{{ years_tracked }}</span>
+      <span class="kpi-label">Fiscal Years Tracked</span>
+    </div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-icon kpi-green">
+      <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+    </div>
+    <div class="kpi-body">
+      <span class="kpi-value">
+        {{ ((completed_docs / total_docs * 100) | int) if total_docs else 0 }}<span class="kpi-unit">%</span>
+      </span>
+      <span class="kpi-label">Processed Successfully</span>
+    </div>
+  </div>
+</div>
+
+<!-- ── Main grid ─────────────────────────────────────────────────── -->
+<div class="dash-grid">
+
+  <!-- County rankings -->
+  <div class="card card-wide">
+    <div class="card-head">
+      <h2 class="card-title">County Rankings</h2>
+      <a href="{{ url_for('counties') }}" class="card-link">View all →</a>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table" id="rankingsTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>County</th>
+            <th>Region</th>
+            <th class="text-right">Documents</th>
+            <th class="text-right">Latest Revenue</th>
+            <th>Audit Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rankingsBody">
+          {% for county, doc_count in counties_ranked[:20] %}
+          <tr>
+            <td class="rank-num">{{ loop.index }}</td>
+            <td class="county-name-cell">
+              <a href="{{ url_for('county_detail', county_id=county.id) }}">{{ county.name }}</a>
+            </td>
+            <td><span class="region-tag">{{ county.region }}</span></td>
+            <td class="text-right">
+              <span class="doc-badge">{{ doc_count }}</span>
+            </td>
+            <td class="text-right mono" id="rev-{{ county.id }}">—</td>
+            <td id="audit-{{ county.id }}">
+              <span class="badge badge-neutral">—</span>
+            </td>
+            <td>
+              <a href="{{ url_for('county_detail', county_id=county.id) }}" class="tbl-action">View →</a>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7">
+              <div class="empty-state" style="padding:32px 0;">
+                No documents uploaded yet.
+                {% if current_user.is_authenticated and current_user.can_upload() %}
+                <a href="{{ url_for('admin_upload') }}" style="margin-left:8px;">Upload PDFs →</a>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Audit opinion donut -->
+  <div class="card">
+    <div class="card-head">
+      <h2 class="card-title">Audit Opinions</h2>
+      <span class="card-meta">All counties</span>
+    </div>
+    <div class="chart-container" style="height:220px;">
+      <canvas id="auditDonut"></canvas>
+    </div>
+    <div class="legend-list" id="auditLegend">
+      {% for opinion in ['unqualified','qualified','adverse','disclaimer'] %}
+      {% set count = opinion_counts.get(opinion, 0) %}
+      {% if count %}
+      <div class="legend-item">
+        <span class="legend-dot dot-{{ opinion }}"></span>
+        <span class="legend-label">{{ opinion | opinion_label }}</span>
+        <span class="legend-val">{{ count }}</span>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Source breakdown -->
+  <div class="card">
+    <div class="card-head">
+      <h2 class="card-title">Document Sources</h2>
+    </div>
+    <div class="chart-container" style="height:220px;">
+      <canvas id="sourceBar"></canvas>
+    </div>
+  </div>
+
+  <!-- Latest uploads -->
+  <div class="card card-wide">
+    <div class="card-head">
+      <h2 class="card-title">Latest Uploads</h2>
+      <a href="{{ url_for('library') }}" class="card-link">View library →</a>
+    </div>
+    <div class="feed">
+      {% for doc in latest_docs %}
+      <div class="feed-item">
+        <div class="feed-icon src-{{ doc.source | lower }}">
+          {{ doc.source or '?' }}
+        </div>
+        <div class="feed-body">
+          <a href="{{ url_for('document_detail', doc_id=doc.id) }}" class="feed-name">
+            {{ doc.original_filename | truncate(55) }}
+          </a>
+          <span class="feed-meta">
+            {{ doc.county_name or 'Unknown county' }} ·
+            {{ doc.fiscal_year or '—' }} ·
+            {{ doc.upload_date.strftime('%d %b %Y') if doc.upload_date else '—' }}
+          </span>
+        </div>
+        <span class="status-pill {{ doc.processing_status | status_class }}">
+          {{ doc.processing_status | title }}
+        </span>
+      </div>
+      {% else %}
+      <div class="empty-state">No documents uploaded yet.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+</div><!-- /dash-grid -->
+
+<!-- === AI ENHANCEMENT 2: Platform Intelligence Brief === -->
+<div class="card ai-card" style="margin-top:1.5rem;">
+  <div class="card-head">
+    <h2 class="card-title">Platform Intelligence Brief</h2>
+    <button class="btn btn-sm btn-primary" id="dashBriefBtn" onclick="loadDashBrief()">
+      Generate AI Brief
+    </button>
+  </div>
+  <div id="dashBriefPanel" class="ai-panel">
+    <p class="ai-placeholder">Click "Generate AI Brief" for a Claude-authored executive summary of the current platform state — coverage, standout counties, and key fiscal trends.</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Audit donut ──────────────────────────────────────────────────
+const opinionData = {
+  unqualified: {{ opinion_counts.get('unqualified', 0) }},
+  qualified:   {{ opinion_counts.get('qualified', 0) }},
+  adverse:     {{ opinion_counts.get('adverse', 0) }},
+  disclaimer:  {{ opinion_counts.get('disclaimer', 0) }},
+};
+const donutCtx = document.getElementById('auditDonut');
+if (donutCtx && (opinionData.unqualified + opinionData.qualified + opinionData.adverse + opinionData.disclaimer) > 0) {
+  new Chart(donutCtx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Clean', 'Qualified', 'Adverse', 'Disclaimer'],
+      datasets: [{
+        data: [opinionData.unqualified, opinionData.qualified, opinionData.adverse, opinionData.disclaimer],
+        backgroundColor: ['#00c896','#f5a623','#ff4d6a','#8b5cf6'],
+        borderWidth: 0,
+        hoverOffset: 6,
+      }]
+    },
+    options: {
+      cutout: '68%',
+      plugins: { legend: { display: false }, tooltip: { callbacks: {
+        label: ctx => ` ${ctx.label}: ${ctx.raw} reports`
+      }}},
+    }
+  });
+}
+
+// ── Source bar ───────────────────────────────────────────────────
+fetch('/api/dashboard/stats')
+  .then(r => r.json())
+  .then(data => {
+    // Source bar
+    const srcCtx = document.getElementById('sourceBar');
+    if (srcCtx) {
+      const src = data.sources || {};
+      new Chart(srcCtx, {
+        type: 'bar',
+        data: {
+          labels: Object.keys(src),
+          datasets: [{
+            data: Object.values(src),
+            backgroundColor: ['#4f8ef7','#00c8e0','#f5a623','#8b5cf6'],
+            borderRadius: 4,
+            borderWidth: 0,
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          plugins: { legend: { display: false }},
+          scales: {
+            x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8b90a7' }},
+            y: { grid: { display: false },                  ticks: { color: '#8b90a7' }},
+          }
+        }
+      });
+    }
+
+    // Populate revenue + audit columns in rankings table
+    const yr = document.getElementById('yearFilter').value;
+    loadRankings(yr);
+  });
+
+// ── Rankings enrichment ──────────────────────────────────────────
+function loadRankings(fiscalYear) {
+  const qs = fiscalYear ? `?fiscal_year=${fiscalYear}` : '';
+  fetch('/api/counties' + qs)
+    .then(r => r.json())
+    .then(counties => {
+      counties.forEach(c => {
+        const revEl   = document.getElementById('rev-'   + c.id);
+        const auditEl = document.getElementById('audit-' + c.id);
+        if (revEl && c.metrics.total_revenue) {
+          const v = c.metrics.total_revenue;
+          revEl.textContent = v >= 1000 ? `KES ${(v/1000).toFixed(1)}B` : `KES ${v.toFixed(0)}M`;
+        }
+        if (auditEl && c.audit) {
+          const labels = {unqualified:'Clean',qualified:'Qualified',adverse:'Adverse',disclaimer:'Disclaimer'};
+          const classes = {unqualified:'badge-success',qualified:'badge-warning',adverse:'badge-danger',disclaimer:'badge-critical'};
+          auditEl.innerHTML = `<span class="badge ${classes[c.audit]}">${labels[c.audit]}</span>`;
+        }
+      });
+    });
+}
+
+function applyYearFilter(yr) { loadRankings(yr); }
+
+// === AI ENHANCEMENT 2: Dashboard AI Brief ===
+function loadDashBrief() {
+  const panel = document.getElementById('dashBriefPanel');
+  const btn   = document.getElementById('dashBriefBtn');
+  panel.innerHTML = '<p class="ai-loading">Generating platform intelligence brief…</p>';
+  btn.disabled = true;
+  fetch('/api/dashboard/ai-brief')
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      if (d.error) { panel.innerHTML = `<p class="ai-error">${d.error}</p>`; return; }
+      panel.innerHTML = `<div class="ai-brief-text">${d.brief.replace(/\n\n/g,'</p><p class="ai-brief-text">').replace(/\n/g,' ')}</div>`;
+    })
+    .catch(() => { btn.disabled = false; panel.innerHTML = '<p class="ai-error">Request failed.</p>'; });
+}
+</script>
+{% endblock %}

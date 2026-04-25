@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Document Library{% endblock %}
+{% block breadcrumb %}<span>Document Library</span>{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Document Library</h1>
+    <p class="page-sub">{{ pagination.total }} document{{ 's' if pagination.total != 1 }} in archive</p>
+  </div>
+  {% if current_user.can_upload() %}
+  <div class="header-actions">
+    <a href="{{ url_for('admin_upload') }}" class="btn btn-primary btn-sm">
+      <svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+      Upload
+    </a>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Filters -->
+<form method="GET" class="filter-bar">
+  <input class="form-input filter-search" type="text" name="search"
+         placeholder="Search filename, county, document type…"
+         value="{{ filters.search }}">
+  <select class="form-input filter-select" name="county_id">
+    <option value="">All counties</option>
+    {% for c in all_counties %}
+    <option value="{{ c.id }}" {% if filters.county_id == c.id | string %}selected{% endif %}>{{ c.name }}</option>
+    {% endfor %}
+  </select>
+  <select class="form-input filter-select" name="source">
+    <option value="">All sources</option>
+    {% for code, label in sources %}
+    <option value="{{ code }}" {% if filters.source == code %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <select class="form-input filter-select" name="fiscal_year">
+    <option value="">All years</option>
+    {% for fy in fiscal_years %}
+    <option value="{{ fy }}" {% if filters.fiscal_year == fy %}selected{% endif %}>{{ fy }}</option>
+    {% endfor %}
+  </select>
+  <select class="form-input filter-select" name="status">
+    <option value="">All statuses</option>
+    {% for s in ['pending','processing','completed','failed'] %}
+    <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s | title }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn btn-primary btn-sm" type="submit">Filter</button>
+  <a href="{{ url_for('library') }}" class="btn btn-ghost btn-sm">Clear</a>
+</form>
+
+<!-- Table -->
+<div class="card" style="margin-top:1rem;">
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Document</th>
+          <th>County</th>
+          <th>Source</th>
+          <th>Fiscal Year</th>
+          <th>Period</th>
+          <th class="text-right">Pages</th>
+          <th class="text-right">Size</th>
+          <th>Status</th>
+          <th>Uploaded</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for doc in documents %}
+        <tr>
+          <td>
+            <a href="{{ url_for('document_detail', doc_id=doc.id) }}" class="doc-link">
+              {{ doc.original_filename | truncate(42) }}
+            </a>
+            {% if doc.detected_title and doc.detected_title != doc.original_filename %}
+            <span class="doc-subtitle">{{ doc.detected_title | truncate(55) }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if doc.county %}
+            <a href="{{ url_for('county_detail', county_id=doc.county_id) }}">{{ doc.county_name }}</a>
+            {% else %}
+            {{ doc.county_name or '—' }}
+            {% endif %}
+          </td>
+          <td><span class="src-badge src-{{ doc.source | lower }}">{{ doc.source or '—' }}</span></td>
+          <td class="mono">{{ doc.fiscal_year or '—' }}</td>
+          <td>{{ doc.report_period or '—' }}</td>
+          <td class="text-right mono">{{ doc.page_count or '—' }}</td>
+          <td class="text-right mono">{{ doc.file_size | filesize }}</td>
+          <td><span class="status-pill {{ doc.processing_status | status_class }}">{{ doc.processing_status | title }}</span></td>
+          <td class="mono text-sm">{{ doc.upload_date.strftime('%d %b %Y') if doc.upload_date else '—' }}</td>
+          <td class="actions-cell">
+            <a href="{{ url_for('document_detail', doc_id=doc.id) }}" class="tbl-action">View</a>
+            {% if doc.filepath %}
+            <a href="{{ url_for('document_download', doc_id=doc.id) }}" class="tbl-action">Download</a>
+            {% endif %}
+            {% if current_user.can_upload() %}
+            <form method="POST" action="{{ url_for('admin_delete', doc_id=doc.id) }}"
+                  style="display:inline"
+                  onsubmit="return confirm('Delete this document and all extracted data?')">
+              <button class="tbl-action tbl-delete" type="submit">Delete</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="empty-cell">No documents match the current filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  {% if pagination.pages > 1 %}
+  <div class="pagination">
+    {% if pagination.has_prev %}
+    <a href="{{ url_for('library', page=pagination.prev_num, **filters) }}" class="page-btn">‹ Prev</a>
+    {% endif %}
+    {% for p in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+      {% if p %}
+      <a href="{{ url_for('library', page=p, **filters) }}"
+         class="page-btn {% if p == pagination.page %}page-active{% endif %}">{{ p }}</a>
+      {% else %}
+      <span class="page-dots">…</span>
+      {% endif %}
+    {% endfor %}
+    {% if pagination.has_next %}
+    <a href="{{ url_for('library', page=pagination.next_num, **filters) }}" class="page-btn">Next ›</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

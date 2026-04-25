@@ -1,0 +1,391 @@
+{% extends "base.html" %}
+{% block title %}Data Health{% endblock %}
+{% block breadcrumb %}<span>Admin</span><span class="bc-sep">›</span><span>Data Health</span>{% endblock %}
+
+{% block head %}
+<style>
+/* ── Score Gauge ─────────────────────────────────────────────────────── */
+.dh-hero { display: flex; gap: 28px; align-items: stretch; margin-bottom: 24px; flex-wrap: wrap; }
+
+.dh-gauge-card {
+  flex: 0 0 220px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 20px 20px;
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.gauge-ring-wrap { position: relative; width: 140px; height: 140px; }
+.gauge-ring-wrap svg { transform: rotate(-90deg); }
+.gauge-bg  { fill: none; stroke: var(--border); stroke-width: 12; }
+.gauge-arc { fill: none; stroke-width: 12; stroke-linecap: round; transition: stroke-dashoffset 0.8s ease; }
+.gauge-arc-success  { stroke: #22c55e; }
+.gauge-arc-info     { stroke: #3b82f6; }
+.gauge-arc-warning  { stroke: #f59e0b; }
+.gauge-arc-danger   { stroke: #ef4444; }
+.gauge-arc-critical { stroke: #7f1d1d; }
+.gauge-center {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.gauge-score { font-size: 30px; font-weight: 700; color: var(--text1); line-height: 1; }
+.gauge-of    { font-size: 11px; color: var(--text3); }
+.gauge-label { font-size: 12.5px; font-weight: 600; color: var(--text2); text-align: center; }
+.gauge-readiness {
+  display: inline-block; padding: 3px 12px; border-radius: 20px;
+  font-size: 11.5px; font-weight: 600;
+}
+.readiness-success  { background: rgba(34,197,94,.15);  color: #22c55e; }
+.readiness-info     { background: rgba(59,130,246,.15); color: #60a5fa; }
+.readiness-warning  { background: rgba(245,158,11,.15); color: #f59e0b; }
+.readiness-danger   { background: rgba(239,68,68,.15);  color: #f87171; }
+.readiness-critical { background: rgba(127,29,29,.3);   color: #fca5a5; }
+
+/* ── Stats Grid ──────────────────────────────────────────────────────── */
+.dh-stats-grid {
+  flex: 1; display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px; align-content: start;
+}
+.dh-stat {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.dh-stat-val { font-size: 26px; font-weight: 700; color: var(--text1); line-height: 1; }
+.dh-stat-lbl { font-size: 11.5px; color: var(--text3); text-transform: uppercase; letter-spacing: .04em; }
+.dh-stat-sub { font-size: 11px; color: var(--text3); }
+.dh-stat-val.good    { color: #22c55e; }
+.dh-stat-val.warn    { color: #f59e0b; }
+.dh-stat-val.bad     { color: #ef4444; }
+
+/* ── Score Breakdown ─────────────────────────────────────────────────── */
+.dh-breakdown {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px; margin-bottom: 24px;
+}
+.dh-breakdown h3 { font-size: 13.5px; font-weight: 600; color: var(--text2); margin-bottom: 16px; text-transform: uppercase; letter-spacing: .06em; }
+.score-rows { display: flex; flex-direction: column; gap: 12px; }
+.score-row { display: flex; align-items: center; gap: 12px; }
+.score-row-label { font-size: 13px; color: var(--text2); width: 220px; flex-shrink: 0; }
+.score-row-label small { display: block; font-size: 11px; color: var(--text3); }
+.score-bar-wrap { flex: 1; background: var(--bg3); border-radius: 20px; height: 8px; overflow: hidden; }
+.score-bar-fill { height: 100%; border-radius: 20px; background: var(--purple); transition: width 0.6s ease; }
+.score-row-pts  { font-size: 13px; font-weight: 600; color: var(--text1); width: 60px; text-align: right; flex-shrink: 0; }
+
+/* ── Gaps ────────────────────────────────────────────────────────────── */
+.dh-gaps {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px; margin-bottom: 24px;
+}
+.dh-gaps h3 { font-size: 13.5px; font-weight: 600; color: var(--text2); margin-bottom: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.gap-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+  font-size: 13px; color: var(--text2); line-height: 1.5;
+}
+.gap-item:last-child { border-bottom: none; }
+.gap-dot { width: 7px; height: 7px; border-radius: 50%; background: #f59e0b; flex-shrink: 0; margin-top: 5px; }
+.no-gaps { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: #22c55e; padding: 8px 0; }
+
+/* ── Upload CTA ──────────────────────────────────────────────────────── */
+.dh-cta {
+  background: linear-gradient(135deg, rgba(168,85,247,.08), rgba(59,130,246,.08));
+  border: 1px solid rgba(168,85,247,.25);
+  border-radius: var(--radius); padding: 20px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 20px; margin-bottom: 28px; flex-wrap: wrap;
+}
+.dh-cta-text h3 { font-size: 15px; font-weight: 600; color: var(--text1); margin-bottom: 4px; }
+.dh-cta-text p  { font-size: 13px; color: var(--text3); }
+
+/* ── County Table ────────────────────────────────────────────────────── */
+.dh-table-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.dh-table-head {
+  padding: 16px 20px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+.dh-table-head h2 { font-size: 14px; font-weight: 600; color: var(--text1); }
+.dh-filter-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.dh-filter-btn {
+  padding: 4px 12px; border-radius: 20px; border: 1px solid var(--border);
+  background: transparent; color: var(--text3); font-size: 12px; cursor: pointer;
+  transition: all .15s;
+}
+.dh-filter-btn.active, .dh-filter-btn:hover {
+  background: var(--purple); border-color: var(--purple); color: #fff;
+}
+
+.county-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.county-table th {
+  text-align: left; padding: 10px 14px;
+  color: var(--text3); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  border-bottom: 1px solid var(--border); background: var(--bg3);
+}
+.county-table td { padding: 9px 14px; border-bottom: 1px solid rgba(255,255,255,.04); color: var(--text2); }
+.county-table tr:last-child td { border-bottom: none; }
+.county-table tr:hover td { background: var(--bg3); }
+
+.status-badge {
+  display: inline-block; padding: 2px 9px; border-radius: 20px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+}
+.status-good    { background: rgba(34,197,94,.15);  color: #22c55e; }
+.status-partial { background: rgba(245,158,11,.15); color: #f59e0b; }
+.status-uploaded{ background: rgba(59,130,246,.15); color: #60a5fa; }
+.status-missing { background: rgba(255,255,255,.06); color: var(--text3); }
+
+.check { color: #22c55e; }
+.cross { color: rgba(255,255,255,.2); }
+.year-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.year-tag { padding: 1px 6px; border-radius: 4px; background: var(--bg3); font-size: 11px; color: var(--text3); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header" style="margin-bottom:20px;">
+  <div>
+    <h1 class="page-title">Data Health Audit</h1>
+    <p class="page-sub">Real-time assessment of uploaded fiscal data across all 47 counties</p>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <a href="{{ url_for('admin_upload') }}" class="btn btn-primary">
+      <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;flex-shrink:0;"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+      Upload Documents
+    </a>
+  </div>
+</div>
+
+<!-- ── Hero: Gauge + Stats ─────────────────────────────────────────── -->
+<div class="dh-hero">
+
+  <!-- Circular gauge -->
+  <div class="dh-gauge-card">
+    {% set r = 54 %}
+    {% set circ = 2 * 3.14159 * r %}
+    {% set offset = circ * (1 - health.score / 100) %}
+    <div class="gauge-ring-wrap">
+      <svg width="140" height="140" viewBox="0 0 140 140">
+        <circle class="gauge-bg"  cx="70" cy="70" r="{{ r }}"/>
+        <circle class="gauge-arc gauge-arc-{{ health.readiness_class }}"
+                cx="70" cy="70" r="{{ r }}"
+                stroke-dasharray="{{ circ | round(1) }}"
+                stroke-dashoffset="{{ offset | round(1) }}"/>
+      </svg>
+      <div class="gauge-center">
+        <span class="gauge-score">{{ health.score }}</span>
+        <span class="gauge-of">/ 100</span>
+      </div>
+    </div>
+    <span class="gauge-readiness readiness-{{ health.readiness_class }}">{{ health.readiness }}</span>
+    <span class="gauge-label" style="font-size:11px;color:var(--text3);">Data Completeness Score</span>
+  </div>
+
+  <!-- Stats grid -->
+  <div class="dh-stats-grid">
+    <div class="dh-stat">
+      <span class="dh-stat-val {% if health.counties_covered == health.counties_total %}good{% elif health.counties_covered > 20 %}warn{% else %}bad{% endif %}">
+        {{ health.counties_covered }}
+      </span>
+      <span class="dh-stat-lbl">Counties Covered</span>
+      <span class="dh-stat-sub">of {{ health.counties_total }} total</span>
+    </div>
+    <div class="dh-stat">
+      <span class="dh-stat-val {% if health.years_covered >= 3 %}good{% elif health.years_covered >= 1 %}warn{% else %}bad{% endif %}">
+        {{ health.years_covered }}
+      </span>
+      <span class="dh-stat-lbl">Fiscal Years</span>
+      <span class="dh-stat-sub">3+ years recommended</span>
+    </div>
+    <div class="dh-stat">
+      <span class="dh-stat-val {% if health.total_docs > 0 %}good{% else %}bad{% endif %}">
+        {{ health.total_docs }}
+      </span>
+      <span class="dh-stat-lbl">Total Documents</span>
+      <span class="dh-stat-sub">{{ health.processed_docs }} processed</span>
+    </div>
+    <div class="dh-stat">
+      <span class="dh-stat-val {% if health.pending_docs == 0 %}good{% else %}warn{% endif %}">
+        {{ health.pending_docs }}
+      </span>
+      <span class="dh-stat-lbl">Processing Queue</span>
+      <span class="dh-stat-sub">pending / in-progress</span>
+    </div>
+    <div class="dh-stat">
+      <span class="dh-stat-val {% if health.failed_docs == 0 %}good{% else %}bad{% endif %}">
+        {{ health.failed_docs }}
+      </span>
+      <span class="dh-stat-lbl">Failed Uploads</span>
+      <span class="dh-stat-sub">need re-upload</span>
+    </div>
+    <div class="dh-stat">
+      <span class="dh-stat-val {% if health.doc_types_count >= 3 %}good{% elif health.doc_types_count >= 1 %}warn{% else %}bad{% endif %}">
+        {{ health.doc_types_count }}
+      </span>
+      <span class="dh-stat-lbl">Document Types</span>
+      <span class="dh-stat-sub">3+ types recommended</span>
+    </div>
+  </div>
+</div>
+
+<!-- ── Score Breakdown ─────────────────────────────────────────────── -->
+<div class="dh-breakdown">
+  <h3>Score Breakdown</h3>
+  <div class="score-rows">
+    {% set cov_pts  = ((health.counties_covered / health.counties_total) * 40) | round(1) %}
+    {% set yr_pts   = ([health.years_covered / 3, 1.0] | min * 20) | round(1) %}
+    {% set rows = [
+      ("County Coverage",       "Docs uploaded for X of 47 counties",       cov_pts,  40),
+      ("Fiscal Year Depth",     "3+ years needed for trend analysis",        yr_pts,   20),
+      ("Metric Completeness",   "Revenue, expenditure, pending bills, audit",health.score - cov_pts - yr_pts | round(1), 25),
+      ("Document Diversity",    "Budget estimates, audits, CFSP, etc.",      ([health.doc_types_count / 3, 1.0] | min * 15) | round(1), 15),
+    ] %}
+    {% for label, hint, pts, max_pts in rows %}
+    <div class="score-row">
+      <div class="score-row-label">
+        {{ label }}
+        <small>{{ hint }}</small>
+      </div>
+      <div class="score-bar-wrap">
+        <div class="score-bar-fill" style="width: {{ (pts / max_pts * 100) | round(0) }}%;"></div>
+      </div>
+      <div class="score-row-pts">{{ pts }}/{{ max_pts }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- ── Gaps & Recommendations ─────────────────────────────────────── -->
+<div class="dh-gaps">
+  <h3>Gaps &amp; Recommendations</h3>
+  {% if health.gaps %}
+    {% for gap in health.gaps %}
+    <div class="gap-item">
+      <div class="gap-dot"></div>
+      <span>{{ gap }}</span>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="no-gaps">
+      <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:currentColor;flex-shrink:0;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+      No critical gaps detected — the dataset is well covered!
+    </div>
+  {% endif %}
+</div>
+
+<!-- ── Upload CTA ──────────────────────────────────────────────────── -->
+{% if health.score < 80 %}
+<div class="dh-cta">
+  <div class="dh-cta-text">
+    <h3>Ready to improve your score?</h3>
+    <p>Upload PDFs from Controller of Budget, National Treasury, OCOB, and county governments to increase completeness.</p>
+  </div>
+  <a href="{{ url_for('admin_upload') }}" class="btn btn-primary">
+    <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;flex-shrink:0;"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+    Upload Now
+  </a>
+</div>
+{% endif %}
+
+<!-- ── Per-County Status Table ─────────────────────────────────────── -->
+<div class="dh-table-card">
+  <div class="dh-table-head">
+    <h2>County-Level Status <span style="color:var(--text3);font-weight:400;font-size:13px;">({{ health.counties_total }} counties)</span></h2>
+    <div class="dh-filter-row">
+      <button class="dh-filter-btn active" onclick="filterTable('all', this)">All</button>
+      <button class="dh-filter-btn" onclick="filterTable('missing',  this)">Missing</button>
+      <button class="dh-filter-btn" onclick="filterTable('uploaded', this)">Uploaded</button>
+      <button class="dh-filter-btn" onclick="filterTable('partial',  this)">Partial</button>
+      <button class="dh-filter-btn" onclick="filterTable('good',     this)">Good</button>
+    </div>
+  </div>
+
+  <div style="overflow-x:auto;">
+    <table class="county-table" id="countyTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>County</th>
+          <th>Status</th>
+          <th>Docs</th>
+          <th>Fiscal Years</th>
+          <th>Revenue</th>
+          <th>Expenditure</th>
+          <th>Pending Bills</th>
+          <th>Audit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in health.county_data %}
+        <tr data-status="{{ row.status }}">
+          <td style="color:var(--text3);">{{ loop.index }}</td>
+          <td style="font-weight:500;color:var(--text1);">{{ row.county.name }}</td>
+          <td>
+            <span class="status-badge status-{{ row.status }}">
+              {% if row.status == 'good' %}Good
+              {% elif row.status == 'partial' %}Partial
+              {% elif row.status == 'uploaded' %}Uploaded
+              {% else %}Missing{% endif %}
+            </span>
+          </td>
+          <td>{{ row.doc_count }}</td>
+          <td>
+            {% if row.years %}
+            <div class="year-tags">
+              {% for yr in row.years %}<span class="year-tag">{{ yr }}</span>{% endfor %}
+            </div>
+            {% else %}
+            <span style="color:var(--text3);">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if row.has_revenue %}
+            <svg class="check" viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+            {% else %}
+            <svg class="cross" viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            {% endif %}
+          </td>
+          <td>
+            {% if row.has_expenditure %}
+            <svg class="check" viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+            {% else %}
+            <svg class="cross" viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            {% endif %}
+          </td>
+          <td>
+            {% if row.has_pending_bills %}
+            <svg class="check" viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+            {% else %}
+            <svg class="cross" viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            {% endif %}
+          </td>
+          <td>
+            {% if row.has_audit %}
+            <svg class="check" viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+            {% else %}
+            <svg class="cross" viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterTable(status, btn) {
+  document.querySelectorAll('.dh-filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('#countyTable tbody tr').forEach(tr => {
+    tr.style.display = (status === 'all' || tr.dataset.status === status) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}
