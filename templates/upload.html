@@ -12,6 +12,11 @@
 .dz-remove:hover { color: #ef4444; }
 .dz-count        { margin-top: 8px; font-size: 12px; color: var(--purple); font-weight: 600; }
 .dz-over         { border-color: var(--purple) !important; background: rgba(168,85,247,.06) !important; }
+.upload-progress         { display: none; margin-top: 16px; }
+.upload-progress-bar-bg  { background: var(--bg3); border-radius: 999px; height: 10px; overflow: hidden; }
+.upload-progress-bar     { height: 100%; width: 0%; background: var(--purple); border-radius: 999px; transition: width .3s ease; }
+.upload-progress-text    { margin-top: 6px; font-size: 12.5px; color: var(--text2); }
+.upload-progress-error   { color: #ef4444; }
 </style>
 {% endblock %}
 
@@ -99,6 +104,13 @@
           Clear all
         </button>
       </div>
+
+      <div class="upload-progress" id="uploadProgress">
+        <div class="upload-progress-bar-bg">
+          <div class="upload-progress-bar" id="progressBar"></div>
+        </div>
+        <div class="upload-progress-text" id="progressText">Preparing upload…</div>
+      </div>
     </form>
   </div>
 
@@ -135,17 +147,19 @@
 {% block scripts %}
 <script>
 // ── File accumulator ─────────────────────────────────────────────────────
-// We accumulate File objects across multiple drag/browse sessions so the user
-// can add files in batches. Before submit we sync them to the input element.
-let accumulated = [];   // array of File objects
+let accumulated = [];
+let uploading   = false;
 
-const dz      = document.getElementById('dropzone');
-const fi      = document.getElementById('fileInput');
-const fl      = document.getElementById('fileList');
-const dzCount = document.getElementById('dzCount');
-const submitBtn  = document.getElementById('submitBtn');
-const submitLbl  = document.getElementById('submitLabel');
-const clearBtn   = document.getElementById('clearBtn');
+const dz          = document.getElementById('dropzone');
+const fi          = document.getElementById('fileInput');
+const fl          = document.getElementById('fileList');
+const dzCount     = document.getElementById('dzCount');
+const submitBtn   = document.getElementById('submitBtn');
+const submitLbl   = document.getElementById('submitLabel');
+const clearBtn    = document.getElementById('clearBtn');
+const progressEl  = document.getElementById('uploadProgress');
+const progressBar = document.getElementById('progressBar');
+const progressTxt = document.getElementById('progressText');
 
 // ── Drag events ──────────────────────────────────────────────────────────
 dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('dz-over'); });
@@ -156,43 +170,27 @@ dz.addEventListener('drop', e => {
   addFiles(Array.from(e.dataTransfer.files));
 });
 
-// ── Browse dialog ────────────────────────────────────────────────────────
-fi.addEventListener('change', () => {
-  addFiles(Array.from(fi.files));
-  fi.value = '';   // reset so same file can be re-added after removal
-});
+fi.addEventListener('change', () => { addFiles(Array.from(fi.files)); fi.value = ''; });
 
 // ── Accumulate, dedup, render ────────────────────────────────────────────
 function addFiles(newFiles) {
   const existing = new Set(accumulated.map(f => f.name + f.size));
   newFiles.forEach(f => {
     if (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')) {
-      if (!existing.has(f.name + f.size)) {
-        accumulated.push(f);
-        existing.add(f.name + f.size);
-      }
+      if (!existing.has(f.name + f.size)) { accumulated.push(f); existing.add(f.name + f.size); }
     }
   });
   syncAndRender();
 }
 
-function removeFile(idx) {
-  accumulated.splice(idx, 1);
-  syncAndRender();
-}
-
-function clearFiles() {
-  accumulated = [];
-  syncAndRender();
-}
+function removeFile(idx) { accumulated.splice(idx, 1); syncAndRender(); }
+function clearFiles()    { accumulated = []; syncAndRender(); }
 
 function syncAndRender() {
-  // Sync array → input.files via DataTransfer
   const dt = new DataTransfer();
   accumulated.forEach(f => dt.items.add(f));
   fi.files = dt.files;
 
-  // Render list
   fl.innerHTML = '';
   accumulated.forEach((f, i) => {
     const size = f.size > 1048576
@@ -208,23 +206,86 @@ function syncAndRender() {
     fl.appendChild(row);
   });
 
-  // Count badge
   const n = accumulated.length;
-  dzCount.innerHTML = n > 0
-    ? `<div class="dz-count">${n} file${n > 1 ? 's' : ''} queued</div>`
-    : '';
-
-  // Submit button state
+  dzCount.innerHTML = n > 0 ? `<div class="dz-count">${n} file${n > 1 ? 's' : ''} queued</div>` : '';
   submitBtn.disabled = n === 0;
-  submitLbl.textContent = n > 0
-    ? `Upload & Process ${n} file${n > 1 ? 's' : ''}`
-    : 'Upload & Process';
+  submitLbl.textContent = n > 0 ? `Upload & Process ${n} file${n > 1 ? 's' : ''}` : 'Upload & Process';
   clearBtn.style.display = n > 0 ? '' : 'none';
 }
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// ── AJAX upload with progress bar ────────────────────────────────────────
+document.getElementById('uploadForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  if (accumulated.length === 0 || uploading) return;
+
+  uploading = true;
+  submitBtn.disabled = true;
+  clearBtn.style.display = 'none';
+  progressEl.style.display = 'block';
+  progressBar.style.background = '';
+  progressBar.style.width = '0%';
+  progressTxt.className = 'upload-progress-text';
+  progressTxt.textContent = 'Starting upload…';
+
+  const formData = new FormData(this);
+  const xhr = new XMLHttpRequest();
+  let startTime = Date.now();
+
+  xhr.upload.addEventListener('progress', function(e) {
+    if (!e.lengthComputable) return;
+    const pct     = Math.round(e.loaded / e.total * 100);
+    const elapsed = (Date.now() - startTime) / 1000;
+    const speed   = e.loaded / elapsed;                        // bytes/s
+    const remaining = (e.total - e.loaded) / speed;
+    const mbLoaded  = (e.loaded / 1048576).toFixed(1);
+    const mbTotal   = (e.total  / 1048576).toFixed(1);
+    const etaStr    = remaining < 60
+      ? `${Math.ceil(remaining)}s left`
+      : `${Math.ceil(remaining / 60)}m left`;
+    progressBar.style.width = pct + '%';
+    progressTxt.textContent = `Uploading… ${pct}%  (${mbLoaded} / ${mbTotal} MB — ${etaStr})`;
+  });
+
+  xhr.addEventListener('load', function() {
+    uploading = false;
+    progressBar.style.width = '100%';
+    progressTxt.textContent = 'Upload complete — redirecting…';
+    window.location.href = xhr.responseURL || '/admin/upload';
+  });
+
+  xhr.addEventListener('error', function() {
+    uploading = false;
+    progressBar.style.background = '#ef4444';
+    progressTxt.className = 'upload-progress-text upload-progress-error';
+    progressTxt.textContent = 'Upload failed — please check your connection and try again.';
+    submitBtn.disabled = false;
+    clearBtn.style.display = '';
+  });
+
+  xhr.addEventListener('abort', function() {
+    uploading = false;
+    progressTxt.className = 'upload-progress-text upload-progress-error';
+    progressTxt.textContent = 'Upload cancelled.';
+    submitBtn.disabled = false;
+    clearBtn.style.display = '';
+  });
+
+  xhr.open('POST', '/admin/upload');
+  xhr.send(formData);
+});
+
+// ── Warn before navigating away during an active upload ──────────────────
+window.addEventListener('beforeunload', function(e) {
+  if (uploading) {
+    e.preventDefault();
+    e.returnValue = 'Upload in progress — leaving will cancel it and lose your files.';
+    return e.returnValue;
+  }
+});
 
 // ── Poll processing status for pending items ─────────────────────────────
 const pendingIds = [{% for doc in recent %}{% if doc.processing_status in ('pending','processing') %}{{ doc.id }},{% endif %}{% endfor %}];
