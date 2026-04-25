@@ -509,13 +509,11 @@ def extract_pdf_metadata(filepath: str):
     try:
         with pdfplumber.open(filepath) as pdf:
             page_count = len(pdf.pages)
-            # Read once, capped at 60 pages — key tables in CoB/OAG reports
-            # appear in the first half; reading beyond wastes time for no gain
-            parts = []
-            for page in pdf.pages[:60]:
-                parts.append(page.extract_text() or "")
+            # Read all pages in one pass — combined CoB reports cover all 47
+            # counties sequentially and can exceed 500 pages; a cap would miss
+            # county data that starts deep in the document
+            parts = [page.extract_text() or "" for page in pdf.pages]
             full_text = "\n".join(parts)
-            # Reuse the first ~3 pages worth of text for title detection
             title = _detect_title(full_text[:4000])
             return page_count, title, full_text
     except Exception as exc:
